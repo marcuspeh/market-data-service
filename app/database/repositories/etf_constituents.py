@@ -21,9 +21,7 @@ class ETFConstituentsRepository:
         ]
         await ETFConstituents.bulk_create(rows)
 
-    async def get_cached(
-        self, etf_symbol: str, max_age_days: int = 7
-    ) -> list[dict[str, Any]] | None:
+    async def get_cached(self, etf_symbol: str, max_age_days: int = 7) -> list[dict[str, Any]] | None:
         # Check if we have any data and how old it is
         row = (
             await ETFConstituents.filter(etf_symbol=etf_symbol)
