@@ -24,8 +24,6 @@ async def get_market_data(
     to: date | None = Query(
         None, description="End date inclusive (YYYY-MM-DD). Defaults to today."
     ),
-    timespan: str = Query("day", description="One of: day, hour, minute"),
-    multiplier: int = Query(1, ge=1, le=100, description="Bar size multiplier"),
 ):
     if to is None:
         to = date.today()
@@ -35,8 +33,6 @@ async def get_market_data(
             ticker=ticker,
             start=from_,
             end=to,
-            timespan=timespan,
-            multiplier=multiplier,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -179,34 +179,39 @@ The `source` field is either `"cache"` (served from MySQL) or `"external"`
 
 ### `GET /market-data/{ticker}`
 
-Returns OHLCV bars for a ticker, with a backfill-on-cache-miss strategy.
-Backed by Polygon.io's `/v2/aggs/.../range/{multiplier}/{timespan}/{from}/{to}`
-endpoint.
+Returns **daily** OHLCV bars for a ticker. Historical bars (`from..today-1`)
+are served from the local MySQL cache, backfilled from Polygon.io on miss.
+Today's bar is fetched live from Interactive Brokers (via
+`IBKRClient`) and **never persisted** — it may still be forming.
 
 | Query param | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `from` | `YYYY-MM-DD` | required | Start date (inclusive) |
 | `to` | `YYYY-MM-DD` | today | End date (inclusive) |
-| `timespan` | `day` \| `hour` \| `minute` | `day` | Bar size unit |
-| `multiplier` | int (≥1) | `1` | Bar size multiplier |
 
-Any time range is supported; the cache will backfill missing dates from Polygon on demand.
+Any time range is supported. Each bar in the response is tagged with
+`source` — `"cache"` for historical bars served from MySQL, `"ibkr"` for
+today's live bar from Interactive Brokers.
 
 ```bash
-curl 'http://localhost:8001/market-data/AAPL?from=2026-07-01&to=2026-08-01&timespan=day'
+curl 'http://localhost:8001/market-data/AAPL?from=2026-07-01&to=2026-08-01'
 ```
 
 ```json
 {
   "ticker": "AAPL",
-  "timespan": "day",
-  "multiplier": 1,
   "from": "2026-07-01",
   "to": "2026-08-01",
   "backfilled_bars": 22,
   "bars": [
-    {"timestamp_ms": 1720564800000, "bar_date": "2026-07-09", ...},
-    ...
+    {"timestamp": 1752019200000,
+     "open": 207.45, "high": 209.12, "low": 206.78, "close": 208.91,
+     "volume": 48230000.0, "vwap": 208.02, "trade_count": 412567,
+     "source": "cache"},
+    {"timestamp": 1755043200000,
+     "open": 215.30, "high": 216.10, "low": 214.80, "close": 215.95,
+     "volume": 12340000.0, "vwap": 215.60, "trade_count": 98765,
+     "source": "ibkr"}
   ]
 }
 ```

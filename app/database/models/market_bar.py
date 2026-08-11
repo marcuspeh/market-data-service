@@ -3,15 +3,15 @@ from tortoise.models import Model
 
 
 class MarketBar(Model):
-    """One OHLCV bar for a ticker at a given timestamp/timespan."""
+    """One daily OHLCV bar for a ticker."""
 
     id = fields.IntField(pk=True)
     ticker = fields.CharField(max_length=20)
-    timespan = fields.CharField(max_length=10)  # "day" | "hour" | "minute"
-    multiplier = fields.IntField()  # e.g. 1 for "1 day"
 
-    timestamp_ms = fields.BigIntField()  # Polygon's bar timestamp in ms
-    bar_date = fields.DateField()  # date-only, used for range queries / dedupe
+    # Daily bar open time (UTC midnight). Single source of truth for the
+    # bar's date — date-specific filtering is done by range queries on
+    # this column.
+    timestamp = fields.BigIntField()
 
     open = fields.FloatField()
     high = fields.FloatField()
@@ -25,15 +25,15 @@ class MarketBar(Model):
 
     class Meta:
         table = "market_bars"
-        # Composite uniqueness: one bar per (ticker, timespan, multiplier, ts)
-        unique_together = [("ticker", "timespan", "multiplier", "timestamp_ms")]
+        # One row per ticker per bar open time.
+        unique_together = [("ticker", "timestamp")]
         indexes = [
-            ("ticker", "timespan", "multiplier", "bar_date"),
+            ("ticker", "timestamp"),
         ]
-        ordering = ["-timestamp_ms"]
+        ordering = ["-timestamp"]
 
     def __str__(self) -> str:
         return (
-            f"MarketBar(ticker={self.ticker}, timespan={self.timespan}, "
-            f"ts={self.timestamp_ms}, close={self.close})"
+            f"MarketBar(ticker={self.ticker}, "
+            f"ts={self.timestamp}, close={self.close})"
         )

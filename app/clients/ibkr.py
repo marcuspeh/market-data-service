@@ -5,8 +5,9 @@ The official ``ibapi`` package is synchronous and callback-based
 running the client loop on a background thread and resolving an
 ``asyncio.Future`` from the wrapper callbacks.
 
-Only used for **current-day** bars: historical data from IBKR is not
-persisted to the cache because the current-day bar may still be forming.
+Only used for **today's daily bar**: historical data comes from Polygon
++ the local cache, and the current-day bar is never persisted because
+it may still be forming.
 """
 import asyncio
 import logging
@@ -27,36 +28,6 @@ class IBKRError(RuntimeError):
     pass
 
 
-# Map our (multiplier, timespan) vocabulary to ibapi's ``barSizeSetting``.
-# ibapi doesn't have an "1 hour" bar for example, so we degrade to the
-# closest supported granularity.
-_BAR_SIZE_MAP: dict[tuple[int, str], str] = {
-    (1, "second"): "1 secs",
-    (5, "second"): "5 secs",
-    (15, "second"): "15 secs",
-    (30, "second"): "30 secs",
-    (1, "minute"): "1 min",
-    (2, "minute"): "2 mins",
-    (3, "minute"): "3 mins",
-    (5, "minute"): "5 mins",
-    (15, "minute"): "15 mins",
-    (30, "minute"): "30 mins",
-    (1, "hour"): "1 hour",
-    (1, "day"): "1 day",
-}
-
-
-def _to_bar_size(multiplier: int, timespan: str) -> str:
-    timespan = timespan.lower()
-    key = (multiplier, timespan)
-    if key in _BAR_SIZE_MAP:
-        return _BAR_SIZE_MAP[key]
-    raise IBKRError(
-        f"IBKR does not support {multiplier} {timespan} bars. "
-        f"Supported: {sorted(_BAR_SIZE_MAP)}"
-    )
-
-
 class _BarCollector(EWrapper):
     """Captures historical bars and signals completion via an asyncio.Future.
 
@@ -70,7 +41,6 @@ class _BarCollector(EWrapper):
         self._loop = loop
         self._fut = fut
         self.bars: list[dict[str, Any]] = []
-        self._error: IBKRError | None = None
 
     # --- EWrapper callbacks --------------------------------------------------
 
@@ -86,12 +56,16 @@ class _BarCollector(EWrapper):
                     "l": float(bar.low),
                     "c": float(bar.close),
                     "v": float(getattr(bar, "volume", 0) or 0),
-                    "vw": float(getattr(bar, "average", 0) or 0)
-                    if getattr(bar, "average", None)
-                    else None,
-                    "n": int(getattr(bar, "barCount", 0) or 0)
-                    if getattr(bar, "barCount", None)
-                    else None,
+                    "vw": (
+                        float(getattr(bar, "average", 0) or 0)
+                        if getattr(bar, "average", None)
+                        else None
+                    ),
+                    "n": (
+                        int(getattr(bar, "barCount", 0) or 0)
+                        if getattr(bar, "barCount", None)
+                        else None
+                    ),
                 }
             )
         except (ValueError, TypeError) as e:
@@ -99,23 +73,19 @@ class _BarCollector(EWrapper):
 
     def historicalDataEnd(self, reqId, start, end):
         if not self._fut.done():
-            self._loop.call_soon_threadsafe(
-                self._fut.set_result, self.bars
-            )
+            self._loop.call_soon_threadsafe(self._fut.set_result, self.bars)
 
     def error(self, reqId, errorCode, errorString, advancedOrderRejectJson=""):
         # Errors during connection come through here too.
         msg = f"IBKR error {errorCode}: {errorString}"
         logger.warning(msg)
         if not self._fut.done():
-            self._loop.call_soon_threadsafe(
-                self._fut.set_exception, IBKRError(msg)
-            )
+            self._loop.call_soon_threadsafe(self._fut.set_exception, IBKRError(msg))
 
     @staticmethod
     def _parse_bar_timestamp_ms(raw: str) -> int:
-        """ibapi returns bar timestamps as ``"YYYYMMDD HH:MM:SS"`` (UTC) or
-        just ``"YYYYMMDD"`` for daily bars. Convert to epoch milliseconds."""
+        """ibapi returns daily bar timestamps as ``"YYYYMMDD"``. Convert to
+        epoch milliseconds (UTC midnight)."""
         raw = raw.strip()
         for fmt in ("%Y%m%d %H:%M:%S", "%Y%m%d"):
             try:
@@ -127,52 +97,41 @@ class _BarCollector(EWrapper):
 
 
 class IBKRClient:
-    """Async client for Interactive Brokers historical bars."""
+    """Async client for Interactive Brokers historical bars (daily only)."""
 
     def __init__(self, settings: Settings):
         self._settings = settings
 
-    async def fetch_intraday_bars(
-        self,
-        ticker: str,
-        multiplier: int,
-        timespan: str,
-    ) -> list[dict[str, Any]]:
-        """Fetch intraday bars for the **current trading day only** (today).
+    async def fetch_today_bar(self, ticker: str) -> dict[str, Any] | None:
+        """Fetch today's single daily bar for ``ticker``.
 
-        IBKR is intentionally only used for today's data:
-            - Polygon + the local cache covers all historical data;
-              using IBKR there would burn the upstream rate limit
-              unnecessarily.
-            - The current-day bar is still forming and may revise
-              intraday, so the result is **never** persisted.
+        Returns ``None`` if the market hasn't traded yet today or IBKR
+        returns no bar for the current session. Raises ``IBKRError`` on
+        connection / API failure.
 
         The combination of ``durationStr="1 D"`` and an empty
         ``endDateTime`` asks TWS for the last 1 day of bars up to "now",
         which in practice is just today's session.
         """
-        bar_size = _to_bar_size(multiplier, timespan)
-
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[list[dict[str, Any]]] = loop.create_future()
         collector = _BarCollector(loop, fut)
 
         client = EClient(collector)
-        await self._run_request(client, collector, fut, ticker, bar_size)
+        await self._run_request(client, fut, ticker)
 
-        return await fut
+        bars = await fut
+        return bars[-1] if bars else None
 
     # ------------------------------------------------------------------ helpers
 
     async def _run_request(
         self,
         client: EClient,
-        collector: _BarCollector,
         fut: asyncio.Future,
         ticker: str,
-        bar_size: str,
     ) -> None:
-        """Connect to TWS/IB Gateway, request bars, then disconnect.
+        """Connect to TWS/IB Gateway, request today's bar, then disconnect.
 
         Runs the synchronous ``client.run()`` loop on a background thread
         so the asyncio event loop stays unblocked.
@@ -188,6 +147,8 @@ class IBKRClient:
         contract.exchange = "SMART"
         contract.currency = "USD"
 
+        loop = asyncio.get_running_loop()
+
         def _connect_and_run():
             try:
                 client.connect(host, port, clientId=client_id)
@@ -197,7 +158,7 @@ class IBKRClient:
                     contract=contract,
                     endDateTime="",
                     durationStr="1 D",
-                    barSizeSetting=bar_size,
+                    barSizeSetting="1 day",
                     whatToShow="TRADES",
                     useRTH=1,
                     formatDate=1,

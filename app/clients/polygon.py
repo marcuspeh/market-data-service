@@ -14,26 +14,30 @@ class PolygonError(RuntimeError):
 
 
 class PolygonClient:
-    """Thin async wrapper over Polygon's aggregates endpoint."""
+    """Thin async wrapper over Polygon's daily aggregates endpoint."""
 
     def __init__(self, settings: Settings, *, timeout: float = 15.0) -> None:
         self._settings = settings
         self._timeout = timeout
 
-    async def fetch_aggs(
+    async def fetch_daily_bars(
         self,
         ticker: str,
-        multiplier: int,
-        timespan: str,
         start: date,
         end: date,
     ) -> list[dict[str, Any]]:
+        """Fetch daily bars from Polygon for the given ticker/date range.
+
+        Polygon's aggregates endpoint supports any (multiplier, timespan) but
+        this client only uses it for historical daily bars — today's bar
+        comes from IBKR via ``IBKRClient``.
+        """
         if not self._settings.polygon_api_key:
             raise PolygonError("POLYGON_API_KEY is not configured")
 
         url = (
             f"{self._settings.polygon_base_url}/v2/aggs/ticker/{ticker}/range"
-            f"/{multiplier}/{timespan}/{start.isoformat()}/{end.isoformat()}"
+            f"/1/day/{start.isoformat()}/{end.isoformat()}"
         )
         params = {"adjusted": "true", "sort": "asc", "limit": 5000}
         headers = {"Authorization": f"Bearer {self._settings.polygon_api_key}"}

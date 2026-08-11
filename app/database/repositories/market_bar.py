@@ -1,35 +1,35 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 from app.database.models.market_bar import MarketBar
 
 
+def _date_to_ts(d: date) -> int:
+    """UTC midnight timestamp (ms) for the given calendar date."""
+    return int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp() * 1000)
+
+
 class MarketBarRepository:
-    """Async repository for cached OHLCV bars."""
+    """Async repository for cached daily OHLCV bars."""
 
     async def list_in_range(
         self,
         ticker: str,
-        timespan: str,
-        multiplier: int,
         start: date,
         end: date,
     ) -> list[dict[str, Any]]:
+        start_ts = _date_to_ts(start)
+        end_ts = _date_to_ts(end)
         rows = await (
             MarketBar.filter(
                 ticker=ticker,
-                timespan=timespan,
-                multiplier=multiplier,
-                bar_date__gte=start,
-                bar_date__lte=end,
+                timestamp__gte=start_ts,
+                timestamp__lte=end_ts,
             )
-            .order_by("timestamp_ms")
+            .order_by("timestamp")
             .values(
                 "ticker",
-                "timespan",
-                "multiplier",
-                "timestamp_ms",
-                "bar_date",
+                "timestamp",
                 "open",
                 "high",
                 "low",
@@ -41,22 +41,20 @@ class MarketBarRepository:
         )
         return list(rows)
 
-    async def existing_dates(
+    async def existing_timestamps(
         self,
         ticker: str,
-        timespan: str,
-        multiplier: int,
         start: date,
         end: date,
-    ) -> set[date]:
+    ) -> set[int]:
+        start_ts = _date_to_ts(start)
+        end_ts = _date_to_ts(end)
         rows = await MarketBar.filter(
             ticker=ticker,
-            timespan=timespan,
-            multiplier=multiplier,
-            bar_date__gte=start,
-            bar_date__lte=end,
-        ).values_list("bar_date", flat=True)
-        return {d for d in rows}
+            timestamp__gte=start_ts,
+            timestamp__lte=end_ts,
+        ).values_list("timestamp", flat=True)
+        return {ts for ts in rows}
 
     async def save_many(self, bars: list[MarketBar]) -> None:
         """Bulk insert bars. Conflicts on the unique constraint are ignored

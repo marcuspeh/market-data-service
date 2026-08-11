@@ -5,7 +5,7 @@
 -- Creates the two tables used by the Tortoise ORM models in
 -- app/database/models/:
 --   * etf_constituents  — ETF holdings cache (SPY, QQQ, IWM, ...)
---   * market_bars       — Cached OHLCV bars from Polygon.io
+--   * market_bars       — Cached daily OHLCV bars from Polygon.io
 --
 -- This script is idempotent: every CREATE uses IF NOT EXISTS so it can be
 -- re-run safely against a partially initialized database.
@@ -36,17 +36,15 @@ CREATE TABLE IF NOT EXISTS etf_constituents (
 -- ---------------------------------------------------------------------------
 -- market_bars
 -- ---------------------------------------------------------------------------
--- One row per OHLCV bar. Composite uniqueness prevents duplicate inserts on
--- backfills; a secondary index on (ticker, timespan, multiplier, bar_date)
--- keeps range queries fast.
+-- One row per daily OHLCV bar. `timestamp` is the bar open time in epoch
+-- milliseconds (UTC midnight for daily bars); it is the only time field —
+-- no separate date column is needed because the day is trivially
+-- derivable from the timestamp.
 
 CREATE TABLE IF NOT EXISTS market_bars (
     id            BIGINT       NOT NULL AUTO_INCREMENT,
     ticker        VARCHAR(20)  NOT NULL,
-    timespan      VARCHAR(10)  NOT NULL,              
-    multiplier    INT          NOT NULL,              
-    timestamp_ms  BIGINT       NOT NULL,              
-    bar_date      DATE         NOT NULL,              
+    timestamp     BIGINT       NOT NULL,
     open          DOUBLE       NOT NULL,
     high          DOUBLE       NOT NULL,
     low           DOUBLE       NOT NULL,
@@ -56,6 +54,6 @@ CREATE TABLE IF NOT EXISTS market_bars (
     trade_count   INT          NULL,
     fetched_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    UNIQUE KEY uq_bar_identity (ticker, timespan, multiplier, timestamp_ms),
-    INDEX idx_bar_range (ticker, timespan, multiplier, bar_date)
+    UNIQUE KEY uq_bar_identity (ticker, timestamp),
+    INDEX idx_bar_ticker_timestamp (ticker, timestamp)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

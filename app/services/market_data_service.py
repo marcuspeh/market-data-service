@@ -10,18 +10,16 @@ from app.database.repositories.market_bar import MarketBarRepository
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_TIMESPANS = {"day", "hour", "minute"}
-
 
 class MarketDataService:
-    """Cache-and-proxy orchestrator for OHLCV bars.
+    """Cache-and-proxy orchestrator for **daily** OHLCV bars.
 
     Strategy:
-        * Bars from the **historical** portion of the window (``start..today-1``)
-          are served from the local MySQL cache, backfilled from Polygon on miss.
-        * Bars for **today** (and any future date in the window) are sourced
-          live from Interactive Brokers via ``IBKRClient`` and **never**
-          persisted — the current-day bar is still forming and will change.
+        * Historical bars (``start..today-1``) are served from the local
+          MySQL cache, backfilled from Polygon on miss, and persisted.
+        * Today's bar is sourced live from Interactive Brokers via
+          ``IBKRClient`` and **never** persisted — the current-day bar
+          may still be forming.
     """
 
     def __init__(
@@ -41,96 +39,79 @@ class MarketDataService:
         ticker: str,
         start: date,
         end: date,
-        timespan: str = "day",
-        multiplier: int = 1,
     ) -> dict[str, Any]:
         ticker = ticker.upper()
-        timespan = timespan.lower()
 
-        if timespan not in SUPPORTED_TIMESPANS:
-            raise ValueError(
-                f"Unsupported timespan '{timespan}'. "
-                f"Allowed: {sorted(SUPPORTED_TIMESPANS)}"
-            )
-        if multiplier <= 0:
-            raise ValueError("multiplier must be a positive integer")
         if end < start:
             raise ValueError("'to' must be on or after 'from'")
 
         today = datetime.now(timezone.utc).date()
         historical_end = min(end, today - timedelta(days=1))
-        today_start = max(start, today)
 
-        # ----- Historical portion: cache + Polygon backfill -----------------
         bars: list[dict[str, Any]] = []
         backfilled_bars = 0
 
+        # ----- Historical portion: cache + Polygon backfill -----------------
         if start <= historical_end:
             cached = await self._repo.list_in_range(
-                ticker, timespan, multiplier, start, historical_end
+                ticker, start, historical_end
             )
-            cached_dates = {row["bar_date"] for row in cached}
-            missing = self._missing_trading_dates(
-                start, historical_end, cached_dates
+            cached_timestamps = {row["timestamp"] for row in cached}
+            missing = self._missing_dates(
+                start, historical_end, cached_timestamps
             )
 
             if missing:
+                # Use the smallest window that covers the missing dates so
+                # we don't waste Polygon quota on already-cached days.
+                backfill_start = missing[0]
+                backfill_end = missing[-1]
                 logger.info(
-                    f"{len(missing)} missing date(s) for {ticker} "
-                    f"({timespan}/{multiplier}); backfilling from Polygon"
+                    f"{len(missing)} missing date(s) for {ticker}; "
+                    f"backfilling from Polygon "
+                    f"({backfill_start}..{backfill_end})"
                 )
                 try:
-                    polygon_bars = await self._polygon.fetch_aggs(
-                        ticker, multiplier, timespan, start, historical_end
+                    polygon_bars = await self._polygon.fetch_daily_bars(
+                        ticker, backfill_start, backfill_end
                     )
                 except PolygonError as e:
                     logger.error(f"Polygon fetch failed for {ticker}: {e}")
                     raise
 
-                models = [
-                    self._to_model(ticker, timespan, multiplier, b)
-                    for b in polygon_bars
-                ]
+                models = [self._to_model(ticker, b) for b in polygon_bars]
                 await self._repo.save_many(models)
                 backfilled_bars = len(models)
 
                 cached = await self._repo.list_in_range(
-                    ticker, timespan, multiplier, start, historical_end
+                    ticker, start, historical_end
                 )
 
-            # Mark each cached bar with its provenance.
             for row in cached:
                 bars.append({**row, "source": "cache"})
 
-        # ----- Live portion: IBKR, today (and any future dates) ---------------
-        if today_start <= end:
+        # ----- Today's bar: IBKR, never cached -------------------------------
+        if today <= end:
             logger.info(
-                f"Fetching live bars for {ticker} ({timespan}/{multiplier}) "
-                f"from IBKR for {today_start}..{end}"
+                f"Fetching today's daily bar for {ticker} from IBKR"
             )
             try:
-                ibkr_bars = await self._ibkr.fetch_intraday_bars(
-                    ticker, multiplier, timespan
-                )
+                ibkr_bar = await self._ibkr.fetch_today_bar(ticker)
             except IBKRError as e:
                 logger.error(f"IBKR fetch failed for {ticker}: {e}")
                 raise
 
-            for bar in ibkr_bars:
+            if ibkr_bar is not None:
                 bars.append(
-                    {
-                        **self._normalize_ibkr_bar(bar, ticker, timespan, multiplier),
-                        "source": "ibkr",
-                    }
+                    {**self._normalize_ibkr_bar(ibkr_bar, ticker), "source": "ibkr"}
                 )
+            else:
+                logger.info(f"IBKR returned no bar for {ticker} today")
 
-        # Final response: sort by timestamp ascending.
-        bars.sort(key=lambda b: b["timestamp_ms"])
+        bars.sort(key=lambda b: b["timestamp"])
 
         return {
             "ticker": ticker,
-            "timespan": timespan,
-            "multiplier": multiplier,
             "from": start.isoformat(),
             "to": end.isoformat(),
             "backfilled_bars": backfilled_bars,
@@ -140,32 +121,32 @@ class MarketDataService:
     # ------------------------------------------------------------------ helpers
 
     @staticmethod
-    def _missing_trading_dates(
-        start: date, end: date, cached_dates: set[date]
+    def _date_to_ts(d: date) -> int:
+        """UTC midnight timestamp (ms) for the given calendar date."""
+        return int(
+            datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp() * 1000
+        )
+
+    @classmethod
+    def _missing_dates(
+        cls, start: date, end: date, cached_timestamps: set[int]
     ) -> list[date]:
-        # We don't have a holiday calendar in-app, so we treat every day in the
-        # window as a candidate. Polygon simply returns nothing for non-trading
-        # days, which is fine.
+        # We don't have a holiday calendar in-app, so we treat every day
+        # in the window as a candidate. Polygon simply returns nothing for
+        # non-trading days, which is fine.
         missing: list[date] = []
         d = start
         while d <= end:
-            if d not in cached_dates:
+            if cls._date_to_ts(d) not in cached_timestamps:
                 missing.append(d)
             d += timedelta(days=1)
         return missing
 
-    @staticmethod
-    def _to_model(
-        ticker: str, timespan: str, multiplier: int, bar: dict[str, Any]
-    ) -> MarketBar:
-        ts_ms = int(bar["t"])
-        bar_date = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).date()
+    @classmethod
+    def _to_model(cls, ticker: str, bar: dict[str, Any]) -> MarketBar:
         return MarketBar(
             ticker=ticker,
-            timespan=timespan,
-            multiplier=multiplier,
-            timestamp_ms=ts_ms,
-            bar_date=bar_date,
+            timestamp=int(bar["t"]),
             open=float(bar["o"]),
             high=float(bar["h"]),
             low=float(bar["l"]),
@@ -176,24 +157,11 @@ class MarketDataService:
         )
 
     @staticmethod
-    def _normalize_ibkr_bar(
-        bar: dict[str, Any], ticker: str, timespan: str, multiplier: int
-    ) -> dict[str, Any]:
-        """Reshape an IBKR bar dict to the same shape as cached / Polygon bars.
-
-        Note: ``bar_date`` is omitted from cached bars to match what
-        ``MarketBarRepository.list_in_range`` returns (it projects a tuple
-        of fields that doesn't include bar_date). For IBKR we derive it from
-        the bar timestamp so the response stays self-consistent.
-        """
-        ts_ms = int(bar["t"])
-        bar_date = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).date()
+    def _normalize_ibkr_bar(bar: dict[str, Any], ticker: str) -> dict[str, Any]:
+        """Reshape an IBKR bar dict to the same shape as cached / Polygon bars."""
         return {
             "ticker": ticker,
-            "timespan": timespan,
-            "multiplier": multiplier,
-            "timestamp_ms": ts_ms,
-            "bar_date": bar_date,
+            "timestamp": int(bar["t"]),
             "open": float(bar["o"]),
             "high": float(bar["h"]),
             "low": float(bar["l"]),
