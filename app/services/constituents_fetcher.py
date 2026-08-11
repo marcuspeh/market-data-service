@@ -1,16 +1,55 @@
-import io
+"""Async fetcher that delegates parsing to a per-provider parser.
+
+The registry below maps each supported ticker to ``(provider, link)``. The
+provider key selects which parser module is invoked on the downloaded bytes.
+"""
 import logging
 from typing import Any
 
 import httpx
-import pandas as pd
+
+from app.services.parsers import ishares, ssga
 
 logger = logging.getLogger(__name__)
 
-SPY_URL = (
-    "https://www.ssga.com/us/en/intermediary/library-content/products/fund-data/"
-    "etfs/us/holdings-daily-us-en-spy.xlsx"
-)
+# Each provider must expose a ``parse(content: bytes) -> list[dict]`` function
+# that returns a list of ``{"ticker", "name", "weight"}`` dicts.
+PROVIDER_PARSERS: dict[str, Any] = {
+    "ssga": ssga,
+    "ishares": ishares,
+}
+
+# Registry of supported ETFs. Add a new ticker here and you're done — the
+# fetcher will pick up the right parser automatically.
+ETF_REGISTRY: dict[str, dict[str, str]] = {
+    # SPDR S&P 500 — State Street Global Advisors
+    "SPY": {
+        "provider": "ssga",
+        "link": (
+            "https://www.ssga.com/us/en/intermediary/library-content/"
+            "products/fund-data/etfs/us/holdings-daily-us-en-spy.xlsx"
+        ),
+    },
+    # QQQ (Invesco Nasdaq-100) — backed by iShares Nasdaq-100 ETF (US-listed,
+    # product ID 351653). Same constituents; we use the iShares feed because
+    # it exposes a stable, parseable CSV URL, whereas Invesco's per-product
+    # holdings .xlsx slug is not stable.
+    "QQQ": {
+        "provider": "ishares",
+        "link": (
+            "https://www.ishares.com/us/products/351653/"
+            "ishares-nasdaq-100-etf/latest-holdings.csv"
+        ),
+    },
+    # iShares Russell 2000 ETF — BlackRock / iShares
+    "IWM": {
+        "provider": "ishares",
+        "link": (
+            "https://www.ishares.com/us/products/239710/"
+            "ishares-russell-2000-etf/latest-holdings.csv"
+        ),
+    },
+}
 
 _HEADERS = {
     "User-Agent": (
@@ -20,49 +59,38 @@ _HEADERS = {
 }
 
 
-def _parse_excel(content: bytes) -> list[dict[str, Any]]:
-    # SSGA Excel files typically have metadata in the first few rows.
-    # The actual table header starts around row 4 or 5.
-    df = pd.read_excel(io.BytesIO(content), skiprows=4)
-
-    # Clean up column names (strip whitespace)
-    df.columns = [str(col).strip() for col in df.columns]
-
-    required_cols = ["Ticker", "Name", "Weight"]
-    for col in required_cols:
-        if col not in df.columns:
-            # Fallback: case-insensitive / slight variations
-            matches = [c for c in df.columns if col.lower() in c.lower()]
-            if matches:
-                df.rename(columns={matches[0]: col}, inplace=True)
-            else:
-                raise ValueError(
-                    f"Required column '{col}' not found in Excel file. "
-                    f"Found: {df.columns.tolist()}"
-                )
-
-    # Filter out empty rows or footer rows
-    df = df.dropna(subset=["Ticker", "Weight"])
-
-    constituents: list[dict[str, Any]] = []
-    for _, row in df.iterrows():
-        try:
-            constituents.append(
-                {
-                    "ticker": str(row["Ticker"]).strip(),
-                    "name": str(row["Name"]).strip(),
-                    "weight": float(row["Weight"]),
-                }
-            )
-        except (ValueError, TypeError):
-            continue
-
-    return constituents
+class UnsupportedSymbolError(ValueError):
+    """Raised when the requested symbol is not in the registry."""
 
 
-async def fetch_spy_constituents() -> list[dict[str, Any]]:
-    logger.info(f"Fetching SPY constituents from {SPY_URL}")
+def get_entry(symbol: str) -> dict[str, str]:
+    """Return the registry entry for a symbol, or raise."""
+    symbol = symbol.upper()
+    try:
+        return ETF_REGISTRY[symbol]
+    except KeyError:
+        raise UnsupportedSymbolError(
+            f"Symbol '{symbol}' is not in the ETF registry. "
+            f"Supported: {sorted(ETF_REGISTRY)}"
+        )
+
+
+async def fetch_etf_constituents(symbol: str) -> list[dict[str, Any]]:
+    """Fetch the holdings of any ETF in the registry, dispatching to the
+    parser registered for its provider."""
+    entry = get_entry(symbol)
+    provider = entry["provider"]
+    url = entry["link"]
+
+    parser = PROVIDER_PARSERS[provider]
+
+    logger.info(f"Fetching {symbol.upper()} (provider={provider}) from {url}")
     async with httpx.AsyncClient(headers=_HEADERS, follow_redirects=True) as client:
-        response = await client.get(SPY_URL)
+        response = await client.get(url)
         response.raise_for_status()
-        return _parse_excel(response.content)
+        return parser.parse(response.content)
+
+
+# Backwards-compatible alias used by older callers / tests.
+async def fetch_spy_constituents() -> list[dict[str, Any]]:
+    return await fetch_etf_constituents("SPY")

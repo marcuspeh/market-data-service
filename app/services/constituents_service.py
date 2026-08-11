@@ -2,13 +2,18 @@ import logging
 from typing import Any
 
 from app.database.repositories.etf_constituents import ETFConstituentsRepository
-from app.services.constituents_fetcher import fetch_spy_constituents
+from app.services.constituents_fetcher import (
+    ETF_REGISTRY,
+    fetch_etf_constituents,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class ConstituentsService:
-    SUPPORTED_SYMBOLS = {"SPY"}
+    # Supported symbols are derived from the ETF registry so the fetcher and
+    # the service stay in lock-step.
+    SUPPORTED_SYMBOLS: set[str] = set(ETF_REGISTRY)
 
     def __init__(self, repo: ETFConstituentsRepository | None = None) -> None:
         self._repo = repo or ETFConstituentsRepository()
@@ -27,7 +32,7 @@ class ConstituentsService:
 
         # 2. Fetch fresh data if cache is missing or expired
         logger.info(f"Cache miss/expired for {symbol}. Fetching fresh data...")
-        fresh = await fetch_spy_constituents()
+        fresh = await fetch_etf_constituents(symbol)
 
         # 3. Update cache
         await self._repo.save(symbol, fresh)
