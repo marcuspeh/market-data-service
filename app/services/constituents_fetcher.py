@@ -89,8 +89,3 @@ async def fetch_etf_constituents(symbol: str) -> list[dict[str, Any]]:
         response = await client.get(url)
         response.raise_for_status()
         return parser.parse(response.content)
-
-
-# Backwards-compatible alias used by older callers / tests.
-async def fetch_spy_constituents() -> list[dict[str, Any]]:
-    return await fetch_etf_constituents("SPY")
