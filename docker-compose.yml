@@ -1,0 +1,89 @@
+name: market-data-service
+
+# This compose file expects a MySQL instance already running in another
+# docker stack and reachable as the service hostname "mysql" on the
+# externally-managed bridge network "market-data-net". The ib-gateway and
+# app services below attach to both that external network (to reach MySQL)
+# and an internal private network (so they can talk to each other).
+#
+# Setup (one time):
+#   docker network create market-data-net
+#   docker network connect market-data-net <your-existing-mysql-container>
+#
+# Then bring up everything else here:
+#   docker compose up -d
+
+services:
+  ib-gateway:
+    # gnzsnz/ib-gateway-docker — TWS / IB Gateway container with IBC.
+    # Container ports: 4003=live, 4004=paper, 5900=VNC (browser-based GUI).
+    # Inside this compose network the app connects to `ib-gateway:4004` (paper).
+    image: ghcr.io/gnzsnz/ib-gateway:latest
+    restart: unless-stopped
+    environment:
+      TWS_USERID: ${IBKR_TWS_USERID:?set IBKR_TWS_USERID in .env}
+      TWS_PASSWORD: ${IBKR_TWS_PASSWORD:?set IBKR_TWS_PASSWORD in .env}
+      TRADING_MODE: ${IBKR_TRADING_MODE:-paper}
+      # Skip auto-accept of incoming API connections so we can configure
+      # them in TWS once, then set to "auto" in subsequent runs.
+      TWS_ACCEPT_INCOMING: ${IBKR_ACCEPT_INCOMING:-manual}
+      TWOFA_TIMEOUT_ACTION: ${IBKR_TWOFA_TIMEOUT_ACTION:-exit}
+      TIME_ZONE: ${IBKR_TIME_ZONE:-Etc/UTC}
+      TZ: ${IBKR_TIME_ZONE:-Etc/UTC}
+    # Expose VNC so you can complete 2FA / accept the API connection the
+    # first time. Remove or restrict in production.
+    ports:
+      - "127.0.0.1:5900:5900"
+    healthcheck:
+      # ib-gateway-docker doesn't expose a /health endpoint. We just
+      # confirm the process is alive by checking that port 4003 is listening.
+      test: ["CMD-SHELL", "ss -lnt 'sport = :4003 or sport = :4004' | grep -q LISTEN || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+    networks:
+      # Both networks: external for MySQL access, internal to talk to the app.
+      market-data-net:
+        aliases:
+          - ib-gateway
+      market-data:
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      ib-gateway:
+        condition: service_started
+    environment:
+      # Database — MySQL lives on the external network under hostname "mysql".
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?set MYSQL_DATABASE in .env}
+      # Polygon
+      POLYGON_API_KEY: ${POLYGON_API_KEY:-}
+      # IBKR — connects over the internal compose network.
+      IBKR_HOST: ib-gateway
+      IBKR_TRADING_MODE: ${IBKR_TRADING_MODE:-paper}
+      IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-1}
+      IBKR_TIMEOUT_SECONDS: ${IBKR_TIMEOUT_SECONDS:-10}
+    ports:
+      - "${APP_PORT:-8001}:8001"
+    networks:
+      market-data-net:
+        aliases:
+          - app
+      market-data:
+
+networks:
+  # External — pre-existing, holds the MySQL container. NOT created here.
+  market-data-net:
+    external: true
+    name: market-data-net
+  # Internal — created by compose, used for app ↔ ib-gateway traffic only.
+  market-data:
+    driver: bridge

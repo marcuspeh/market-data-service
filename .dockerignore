@@ -1,0 +1,23 @@
+# Local Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Secrets — never bake into the image
+.env
+
+# Build artifacts
+dist/
+build/
+*.whl
+
+# VCS
+.git/
+.gitignore

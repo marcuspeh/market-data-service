@@ -33,6 +33,9 @@ A small FastAPI service that:
 │   │       └── ishares.py
 │   └── main.py           # FastAPI app + lifespan
 ├── migrations/           # Idempotent SQL migrations (MySQL)
+├── Dockerfile            # Container image (multi-stage, uv-based)
+├── docker-compose.yml    # app + MySQL + ib-gateway-docker
+├── .dockerignore
 ├── pyproject.toml        # uv-managed dependencies
 └── uv.lock
 ```
@@ -66,11 +69,52 @@ mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" \
 
 ## Run
 
+### Option A — Local Python with uv
+
 ```bash
 uv run python -m app.main
 # or
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
+
+### Option B — Docker Compose (recommended)
+
+Brings up the app and
+[gnzsnz/ib-gateway-docker](https://github.com/gnzsnz/ib-gateway-docker).
+**MySQL is expected to already be running in another docker stack** and
+reachable as the service hostname `mysql` on the bridge network
+`market-data-net`. The app and ib-gateway both attach to that external
+network so they can reach MySQL.
+
+```bash
+# 1. One-time: create the shared network and attach your MySQL container
+docker network create market-data-net
+docker network connect market-data-net <your-existing-mysql-container>
+
+# 2. Fill in the IBKR + Polygon + MySQL credentials
+cp .env.example .env
+$EDITOR .env   # set MYSQL_PASSWORD, MYSQL_DATABASE, IBKR_TWS_USERID,
+               #     IBKR_TWS_PASSWORD, POLYGON_API_KEY, ...
+
+# 3. Launch everything (app + ib-gateway)
+docker compose up -d
+
+# 4. First-time IBKR setup
+#    VNC into the gateway at localhost:5900 (no password by default;
+#    set VNC_SERVER_PASSWORD to change) and:
+#      - complete 2FA
+#      - in TWS, accept the incoming API connection for clientId=1
+#    Then set IBKR_ACCEPT_INCOMING=auto in .env and restart ib-gateway.
+
+# 5. Tail logs
+docker compose logs -f app
+```
+
+The app is exposed on `localhost:8001`; the gateway's VNC on
+`localhost:5900`. Inside the networks the app connects to MySQL via
+`mysql:3306` (on `market-data-net`) and to the gateway via
+`ib-gateway:4004` (paper) or `ib-gateway:4003` (live), depending on
+`IBKR_TRADING_MODE`.
 
 ## Configuration
 
@@ -86,6 +130,11 @@ All settings come from environment variables (or a `.env` file via
 | `MYSQL_DATABASE` | _empty_ | MySQL database |
 | `POLYGON_API_KEY` | _empty_ | Polygon.io API key |
 | `POLYGON_BASE_URL` | `https://api.polygon.io` | Override Polygon base URL |
+| `IBKR_HOST` | `ib-gateway` | Hostname of the IB Gateway / TWS API |
+| `IBKR_TRADING_MODE` | `paper` | `paper` or `live` |
+| `IBKR_CLIENT_ID` | `1` | Unique per process; matches TWS "Trusted IPs" |
+| `IBKR_TIMEOUT_SECONDS` | `10` | Request timeout for the IBKR client |
+| `APP_PORT` | `8001` | Host port the FastAPI app listens on |
 
 ## API
 

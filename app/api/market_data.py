@@ -3,6 +3,7 @@ from datetime import date
 
 from fastapi import APIRouter, HTTPException, Path, Query
 
+from app.clients.ibkr import IBKRError
 from app.clients.polygon import PolygonError
 from app.config.settings import get_settings
 from app.services.market_data_service import MarketDataService
@@ -41,7 +42,10 @@ async def get_market_data(
         raise HTTPException(status_code=400, detail=str(e))
     except PolygonError as e:
         logger.error(f"Polygon error for {ticker}: {e}")
-        raise HTTPException(status_code=502, detail=f"Upstream error: {e}")
+        raise HTTPException(status_code=502, detail=f"Polygon upstream error: {e}")
+    except IBKRError as e:
+        logger.error(f"IBKR error for {ticker}: {e}")
+        raise HTTPException(status_code=502, detail=f"IBKR upstream error: {e}")
     except Exception as e:  # noqa: BLE001 — defensive top-level
         logger.error(f"Unexpected error retrieving market data for {ticker}: {e}")
         raise HTTPException(
