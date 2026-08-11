@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.constituents import router as constituents_router
+from app.api.market_data import router as market_data_router
 from app.database.session import close_db, init_db
 
 logging.basicConfig(level=logging.INFO)
@@ -21,8 +22,9 @@ async def lifespan(app: FastAPI):
     await close_db()
 
 
-app = FastAPI(title="ETF Constituents Service", lifespan=lifespan)
+app = FastAPI(title="Market Data Service", lifespan=lifespan)
 app.include_router(constituents_router)
+app.include_router(market_data_router)
 
 
 @app.get("/health")
