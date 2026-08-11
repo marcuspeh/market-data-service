@@ -43,10 +43,10 @@ CREATE TABLE IF NOT EXISTS etf_constituents (
 CREATE TABLE IF NOT EXISTS market_bars (
     id            BIGINT       NOT NULL AUTO_INCREMENT,
     ticker        VARCHAR(20)  NOT NULL,
-    timespan      VARCHAR(10)  NOT NULL,                 -- day | hour | minute
-    multiplier    INT          NOT NULL,                 -- e.g. 1 for "1 day"
-    timestamp_ms  BIGINT       NOT NULL,                 -- bar open time (ms)
-    bar_date      DATE         NOT NULL,                 -- date-only, for range queries
+    timespan      VARCHAR(10)  NOT NULL,              
+    multiplier    INT          NOT NULL,              
+    timestamp_ms  BIGINT       NOT NULL,              
+    bar_date      DATE         NOT NULL,              
     open          DOUBLE       NOT NULL,
     high          DOUBLE       NOT NULL,
     low           DOUBLE       NOT NULL,

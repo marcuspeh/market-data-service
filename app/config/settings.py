@@ -24,10 +24,6 @@ class Settings(BaseSettings):
     polygon_api_key: str = Field(default="")
     polygon_base_url: str = Field(default="https://api.polygon.io")
 
-    # Cache policy for market data
-    # Maximum number of days of bars to retain / serve from cache.
-    market_data_max_days: int = Field(default=200)
-
     @property
     def database_url(self) -> str:
         # URL-encode credentials so passwords containing @, :, /, etc. don't

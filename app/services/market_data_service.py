@@ -12,10 +12,6 @@ logger = logging.getLogger(__name__)
 SUPPORTED_TIMESPANS = {"day", "hour", "minute"}
 
 
-class WindowTooLargeError(ValueError):
-    """Raised when the requested window exceeds the configured cache horizon."""
-
-
 class MarketDataService:
     def __init__(
         self,
@@ -47,8 +43,6 @@ class MarketDataService:
             raise ValueError("multiplier must be a positive integer")
         if end < start:
             raise ValueError("'to' must be on or after 'from'")
-
-        self._enforce_cache_window(start, end)
 
         # 1. Read whatever is already cached for this window
         cached = await self._repo.list_in_range(
@@ -93,16 +87,6 @@ class MarketDataService:
         }
 
     # ------------------------------------------------------------------ helpers
-
-    def _enforce_cache_window(self, start: date, end: date) -> None:
-        today = datetime.now(timezone.utc).date()
-        earliest_allowed = today - timedelta(days=self._settings.market_data_max_days)
-        if start < earliest_allowed:
-            raise WindowTooLargeError(
-                f"Requested 'from' ({start}) is earlier than the cache horizon "
-                f"of {self._settings.market_data_max_days} days "
-                f"(earliest allowed: {earliest_allowed})."
-            )
 
     @staticmethod
     def _missing_trading_dates(

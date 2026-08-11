@@ -1,14 +1,11 @@
 import logging
-from datetime import date, timedelta
+from datetime import date
 
 from fastapi import APIRouter, HTTPException, Path, Query
 
 from app.clients.polygon import PolygonError
 from app.config.settings import get_settings
-from app.services.market_data_service import (
-    MarketDataService,
-    WindowTooLargeError,
-)
+from app.services.market_data_service import MarketDataService
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -40,8 +37,6 @@ async def get_market_data(
             timespan=timespan,
             multiplier=multiplier,
         )
-    except WindowTooLargeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except PolygonError as e:
