@@ -6,13 +6,16 @@ running the client loop on a background thread and resolving an
 ``asyncio.Future`` from the wrapper callbacks.
 
 Only used for **today's daily bar**: historical data comes from Polygon
-+ the local cache, and the current-day bar is never persisted because
-it may still be forming.
++ the local cache, and the current-day bar is never persisted to the
+MySQL cache (it may still be forming). Instead, ``IBKRClient`` keeps a
+short-lived in-process cache so repeated calls within the same 5-minute
+window don't burn IBKR's upstream rate limit.
 """
 import asyncio
 import logging
 import threading
-from datetime import datetime, timezone
+import time
+from datetime import date, datetime, timezone
 from typing import Any
 
 from ibapi.client import EClient
@@ -22,6 +25,10 @@ from ibapi.wrapper import EWrapper
 from app.config.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+# In-process TTL for today's bar. Short enough that the bar can keep
+# updating intraday without serving stale data for long.
+DEFAULT_CACHE_TTL_SECONDS = 300.0  # 5 minutes
 
 
 class IBKRError(RuntimeError):
@@ -97,10 +104,29 @@ class _BarCollector(EWrapper):
 
 
 class IBKRClient:
-    """Async client for Interactive Brokers historical bars (daily only)."""
+    """Async client for Interactive Brokers historical bars (daily only).
 
-    def __init__(self, settings: Settings):
+    Wraps a short-lived in-process TTL cache (default 5 minutes) around
+    the underlying TWS round-trip so concurrent requests for the same
+    ticker collapse into a single upstream call.
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        cache_ttl_seconds: float = DEFAULT_CACHE_TTL_SECONDS,
+    ):
         self._settings = settings
+        self._cache_ttl_seconds = cache_ttl_seconds
+
+        # _cache: (ticker, date) -> (bar, expires_at_monotonic)
+        self._cache: dict[tuple[str, date], tuple[dict[str, Any] | None, float]] = {}
+        # In-flight requests: (ticker, date) -> Future.
+        # Prevents N concurrent calls for the same key from issuing N
+        # upstream IBKR requests.
+        self._inflight: dict[tuple[str, date], asyncio.Future] = {}
+        self._lock = threading.Lock()
 
     async def fetch_today_bar(self, ticker: str) -> dict[str, Any] | None:
         """Fetch today's single daily bar for ``ticker``.
@@ -109,10 +135,61 @@ class IBKRClient:
         returns no bar for the current session. Raises ``IBKRError`` on
         connection / API failure.
 
-        The combination of ``durationStr="1 D"`` and an empty
-        ``endDateTime`` asks TWS for the last 1 day of bars up to "now",
-        which in practice is just today's session.
+        Results are cached in-process for ``cache_ttl_seconds`` (default
+        5 minutes) — so repeated calls within the window are served
+        from memory. The cache key includes the calendar date so a
+        stale ``yesterday`` bar cannot leak into ``today``.
         """
+        key = (ticker.upper(), self._today_utc())
+        now = time.monotonic()
+
+        # Cache hit?
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached is not None and cached[1] > now:
+                logger.debug(f"IBKR cache hit for {ticker}")
+                return cached[0]
+            # Expired — drop it
+            self._cache.pop(key, None)
+
+        # Single-flight: if another coroutine is already fetching this
+        # key, await its future instead of issuing a duplicate request.
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            inflight = self._inflight.get(key)
+            if inflight is not None:
+                is_owner = False
+                future = inflight
+            else:
+                future = loop.create_future()
+                self._inflight[key] = future
+                is_owner = True
+
+        if not is_owner:
+            # We don't `await future` inside the `with` block to avoid
+            # holding the lock during the await.
+            return await future
+
+        try:
+            bar = await self._fetch_today_bar_uncached(ticker)
+        except BaseException as e:
+            with self._lock:
+                self._inflight.pop(key, None)
+                if not future.done():
+                    future.set_exception(e)
+            raise
+        else:
+            with self._lock:
+                self._cache[key] = (bar, now + self._cache_ttl_seconds)
+                self._inflight.pop(key, None)
+                if not future.done():
+                    future.set_result(bar)
+            return bar
+
+    # ------------------------------------------------------------------ helpers
+
+    async def _fetch_today_bar_uncached(self, ticker: str) -> dict[str, Any] | None:
+        """The actual TWS round-trip — no caching, no single-flight."""
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[list[dict[str, Any]]] = loop.create_future()
         collector = _BarCollector(loop, fut)
@@ -123,7 +200,9 @@ class IBKRClient:
         bars = await fut
         return bars[-1] if bars else None
 
-    # ------------------------------------------------------------------ helpers
+    @staticmethod
+    def _today_utc() -> date:
+        return datetime.now(timezone.utc).date()
 
     async def _run_request(
         self,
