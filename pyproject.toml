@@ -14,3 +14,20 @@ dependencies = [
     "tortoise-orm>=1.1.7",
     "uvicorn>=0.52.0",
 ]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = [
+    # Tortoise emits a noisy warning when no real DB is configured;
+    # silence it for the test run.
+    "ignore::DeprecationWarning:tortoise.*",
+]
