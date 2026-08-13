@@ -6,6 +6,10 @@ name: market-data-service
 # app services below attach to both that external network (to reach MySQL)
 # and an internal private network (so they can talk to each other).
 #
+# Persistent data (the parquet cache under /data) is held in a named
+# volume so it survives `docker compose down` / container restarts /
+# image rebuilds. To wipe it: `docker compose down -v`.
+#
 # Setup (one time):
 #   docker network create market-data-net
 #   docker network connect market-data-net <your-existing-mysql-container>
@@ -58,12 +62,9 @@ services:
       ib-gateway:
         condition: service_started
     environment:
-      # Database — MySQL lives on the external network under hostname "mysql".
-      MYSQL_HOST: mysql
-      MYSQL_PORT: "3306"
-      MYSQL_USER: root
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:?set MYSQL_DATABASE in .env}
+      # Parquet cache root — survives container restarts via the
+      # `market_data_data` named volume mounted below.
+      DATA_DIR: /var/lib/market-data
       # Polygon
       POLYGON_API_KEY: ${POLYGON_API_KEY:-}
       # IBKR — connects over the internal compose network.
@@ -73,6 +74,10 @@ services:
       IBKR_TIMEOUT_SECONDS: ${IBKR_TIMEOUT_SECONDS:-10}
     ports:
       - "${APP_PORT:-8001}:8001"
+    volumes:
+      # Persistent parquet cache for constituents + market bars.
+      # Re-create from scratch with `docker compose down -v`.
+      - market_data_data:/var/lib/market-data
     networks:
       market-data-net:
         aliases:
@@ -87,3 +92,8 @@ networks:
   # Internal — created by compose, used for app ↔ ib-gateway traffic only.
   market-data:
     driver: bridge
+
+volumes:
+  # Named volume backing the app's /var/lib/market-data mount.
+  # Persists across `docker compose down` and image rebuilds.
+  market_data_data:
