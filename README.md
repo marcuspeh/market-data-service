@@ -147,11 +147,23 @@ curl http://localhost:8001/health
 # {"status":"ok"}
 ```
 
-### `GET /constituents?symbol={ETF}`
+### `GET /constituents?etf={ETF}&date={YYYY-MM-DD}`
 
-Returns the holdings of a supported ETF. Results are cached in MySQL for
-**7 days**; cache misses/expiries trigger a fetch from the upstream provider
-specified in the registry.
+Returns the holding tickers of a supported ETF for a specific snapshot
+date. Snapshots are stored on disk as one parquet file per ticker under
+`constituents_dir` (default `./data/constituents/`) and refreshed by
+`APScheduler` ~1 hour before each US trading day. If no snapshot exists
+for the requested date, returns **404**.
+
+**Parquet schema** (one row per holding per snapshot date):
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `date` | `date32` | Snapshot date |
+| `ticker` | `string` | The constituent's ticker |
+
+The ETF ticker itself is not stored as a column — it's the filename
+(`SPY.parquet`, `QQQ.parquet`, `IWM.parquet`).
 
 | Symbol | Provider | Source |
 | --- | --- | --- |
@@ -160,22 +172,33 @@ specified in the registry.
 | `IWM` | iShares | iShares Russell 2000 ETF holdings CSV |
 
 ```bash
-curl 'http://localhost:8001/constituents?symbol=SPY'
+curl 'http://localhost:8001/constituents?etf=SPY&date=2026-08-12'
 ```
 
 ```json
 {
   "symbol": "SPY",
-  "source": "cache",
-  "constituents": [
-    {"ticker": "NVDA", "name": "NVIDIA CORP", "weight": 8.13},
-    ...
-  ]
+  "date": "2026-08-12",
+  "source": "parquet",
+  "constituents": ["NVDA", "AAPL", "MSFT", ...]
 }
 ```
 
-The `source` field is either `"cache"` (served from MySQL) or `"external"`
-(freshly fetched and re-cached).
+### `POST /admin/constituents/refresh`
+
+Ad-hoc refresh. By default refreshes every supported ETF for today's date
+(US Eastern). Optional `etf` query param restricts to a single ticker;
+optional `date` overrides the snapshot date.
+
+```bash
+curl -X POST 'http://localhost:8001/admin/constituents/refresh?etf=SPY'
+# {"date": "2026-08-12", "SPY": 505}
+```
+
+```bash
+curl -X POST 'http://localhost:8001/admin/constituents/refresh'
+# {"date": "2026-08-12", "results": {"SPY": 505, "QQQ": 106, "IWM": 1969}}
+```
 
 ### `GET /market-data/{ticker}`
 

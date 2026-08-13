@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from app.api.constituents import router as constituents_router
 from app.api.market_data import router as market_data_router
 from app.database.session import close_db, init_db
+from app.services.constituents_scheduler import ConstituentsScheduler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,8 +19,18 @@ async def lifespan(app: FastAPI):
         logger.info("Database initialized")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
-    yield
-    await close_db()
+
+    scheduler = ConstituentsScheduler()
+    try:
+        scheduler.start()
+    except Exception as e:
+        logger.error(f"Failed to start constituents scheduler: {e}")
+
+    try:
+        yield
+    finally:
+        scheduler.stop()
+        await close_db()
 
 
 app = FastAPI(title="Market Data Service", lifespan=lifespan)

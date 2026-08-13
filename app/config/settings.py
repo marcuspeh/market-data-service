@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     ibkr_client_id: int = Field(default=1)
     ibkr_timeout_seconds: float = Field(default=10.0)
 
+    # Constituents store: one parquet file per ticker under this directory.
+    constituents_dir: str = Field(default="./data/constituents")
+
     @property
     def ibkr_port(self) -> int:
         """Resolve the actual TWS API port based on the trading mode."""
