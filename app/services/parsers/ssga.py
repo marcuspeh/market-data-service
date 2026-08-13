@@ -1,7 +1,7 @@
 """Parser for SSGA / SPDR holdings .xlsx files.
 
-SSGA publishes holdings as a real .xlsx workbook. The first few rows contain
-metadata; the holdings table header starts around row 4 or 5 and uses the
+SSGA publishes holdings as a real .xlsx workbook. The first few rows are
+metadata; the holdings table header starts around row 4 and uses the
 columns ``Ticker``, ``Name``, ``Weight`` (case-insensitive, with some variants).
 """
 import io
@@ -22,7 +22,6 @@ def parse(content: bytes) -> list[dict[str, Any]]:
 
     for col in _REQUIRED_COLUMNS:
         if col not in df.columns:
-            # Fallback: case-insensitive / slight variation match
             matches = [c for c in df.columns if col.lower() in c.lower()]
             if matches:
                 df.rename(columns={matches[0]: col}, inplace=True)

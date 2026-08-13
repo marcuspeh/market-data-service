@@ -12,15 +12,12 @@ from app.services.parsers import ishares, ssga
 
 logger = logging.getLogger(__name__)
 
-# Each provider must expose a ``parse(content: bytes) -> list[dict]`` function
-# that returns a list of ``{"ticker", "name", "weight"}`` dicts.
+# Each provider must expose ``parse(content: bytes) -> list[dict]``.
 PROVIDER_PARSERS: dict[str, Any] = {
     "ssga": ssga,
     "ishares": ishares,
 }
 
-# Registry of supported ETFs. Add a new ticker here and you're done — the
-# fetcher will pick up the right parser automatically.
 ETF_REGISTRY: dict[str, dict[str, str]] = {
     # SPDR S&P 500 — State Street Global Advisors
     "SPY": {
@@ -30,10 +27,9 @@ ETF_REGISTRY: dict[str, dict[str, str]] = {
             "products/fund-data/etfs/us/holdings-daily-us-en-spy.xlsx"
         ),
     },
-    # QQQ (Invesco Nasdaq-100) — backed by iShares Nasdaq-100 ETF (US-listed,
-    # product ID 351653). Same constituents; we use the iShares feed because
-    # it exposes a stable, parseable CSV URL, whereas Invesco's per-product
-    # holdings .xlsx slug is not stable.
+    # QQQ is provided via iShares Nasdaq-100 ETF (US product 351653) — same
+    # constituents, but iShares exposes a stable CSV URL while Invesco's
+    # per-product holdings .xlsx slug is not stable.
     "QQQ": {
         "provider": "ishares",
         "link": (
@@ -41,7 +37,6 @@ ETF_REGISTRY: dict[str, dict[str, str]] = {
             "ishares-nasdaq-100-etf/latest-holdings.csv"
         ),
     },
-    # iShares Russell 2000 ETF — BlackRock / iShares
     "IWM": {
         "provider": "ishares",
         "link": (

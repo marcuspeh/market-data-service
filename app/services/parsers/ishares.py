@@ -1,11 +1,11 @@
 """Parser for iShares ETF holdings CSV files.
 
 iShares publishes holdings at a stable per-product URL
-(``/us/products/<id>/<slug>/latest-holdings.csv``). The CSV starts with several
-metadata rows (fund name, holdings-as-of date, inception, etc.) and then a
-header row with the columns ``Ticker``, ``Name``, ``Sector``, ``Asset Class``,
-``Market Value``, ``Weight (%)``, ... — the relevant columns are ``Ticker``,
-``Name``, and ``Weight (%)``.
+(``/us/products/<id>/<slug>/latest-holdings.csv``). The CSV starts with
+several metadata rows (fund name, holdings-as-of date, inception, etc.)
+then a header row with columns ``Ticker``, ``Name``, ``Sector``,
+``Asset Class``, ``Market Value``, ``Weight (%)``, ... — the relevant
+columns are ``Ticker``, ``Name``, and ``Weight (%)``.
 """
 import csv
 import io
@@ -20,7 +20,6 @@ def parse(content: bytes) -> list[dict[str, Any]]:
     text = content.decode("utf-8-sig", errors="replace")
     reader = csv.reader(io.StringIO(text))
 
-    # Skip metadata rows until we find the column header row.
     header: list[str] | None = None
     for row in reader:
         if not row:
@@ -51,7 +50,6 @@ def parse(content: bytes) -> list[dict[str, Any]]:
         name = row[name_idx].strip()
         weight_raw = row[weight_idx].strip()
 
-        # Footer / blank rows.
         if not ticker or ticker in {"-", "—"}:
             continue
 

@@ -10,11 +10,9 @@ Layout (one parquet per ticker per calendar year):
 Schema:
 
     date        : date32   (bar date)
-    timestamp   : int64    (UTC midnight in ms, derived from date)
-    open        : double
-    high        : double
-    low         : double
-    close       : double
+    ticker      : string
+    timestamp   : int64    (UTC midnight in ms)
+    open/high/low/close : double
     volume      : double
     vwap        : double (nullable)
     trade_count : int64  (nullable)
@@ -35,7 +33,6 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Bar columns (kept in the order they appear in each parquet).
 DATE_COL = "date"
 TICKER_COL = "ticker"
 TIMESTAMP_COL = "timestamp"
@@ -47,7 +44,6 @@ VOLUME_COL = "volume"
 VWAP_COL = "vwap"
 TRADE_COUNT_COL = "trade_count"
 
-# Required base columns; nullable columns may be missing from older rows.
 REQUIRED_COLUMNS = [
     DATE_COL,
     TICKER_COL,
@@ -62,12 +58,12 @@ NULLABLE_COLUMNS = [VWAP_COL, TRADE_COUNT_COL]
 
 
 def _date_to_ts(d: date) -> int:
-    return int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp() * 1000)
+    return int(
+        datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp() * 1000
+    )
 
 
 class MarketBarNotFoundError(KeyError):
-    """Raised when no cached bar exists for the requested ``(ticker, date)``."""
-
     def __init__(self, ticker: str, bar_date: date) -> None:
         self.ticker = ticker
         self.bar_date = bar_date
@@ -75,25 +71,16 @@ class MarketBarNotFoundError(KeyError):
 
 
 class MarketBarsStore:
-    """Reads/writes per-ticker-per-year parquet bar files."""
-
     def __init__(self, base_dir: str | Path):
         self._base_dir = Path(base_dir)
-
-    # ------------------------------------------------------------------ paths
 
     def path_for(self, ticker: str, year: int) -> Path:
         return self._base_dir / ticker.upper() / f"{year}.parquet"
 
-    def _years_for_range(
-        self, start: date, end: date
-    ) -> list[int]:
-        """Years the requested range could touch (inclusive)."""
+    def _years_for_range(self, start: date, end: date) -> list[int]:
         if end < start:
             return []
         return list(range(start.year, end.year + 1))
-
-    # ------------------------------------------------------------------ reads
 
     def list_years(self, ticker: str) -> list[int]:
         ticker_dir = self._base_dir / ticker.upper()
@@ -127,20 +114,15 @@ class MarketBarsStore:
         if not bars:
             return []
 
-        # Filter to the requested window (filter in Python after the cheap
-        # parquet reads; bars list is bounded per request).
         out: list[dict[str, Any]] = []
         for row in bars:
             d = row[DATE_COL]
-            # Row dates may be pandas/pyarrow date objects; normalise to
-            # a plain datetime.date for comparison.
+            # Row dates may be pandas/pyarrow date objects or strings; normalise.
             if hasattr(d, "date"):
                 d = d.date()
             elif isinstance(d, str):
                 d = date.fromisoformat(d)
             if start <= d <= end:
-                # Normalise nullable values so downstream JSON sees None
-                # for missing entries (pd reads NaN/NaT as float('nan')).
                 out.append(_normalise_row(row))
         return out
 
@@ -157,8 +139,6 @@ class MarketBarsStore:
             if k in row
         }
 
-    # ------------------------------------------------------------------ writes
-
     def write_bars(
         self,
         ticker: str,
@@ -166,9 +146,9 @@ class MarketBarsStore:
     ) -> None:
         """Replace/append the given bars into per-year parquet files.
 
-        ``bars`` may span multiple years; we sort, partition by year,
-        and merge into each year's file (dropping any prior rows for
-        the same dates).
+        ``bars`` may span multiple years; we partition by year and merge
+        into each year's file (dropping any prior rows for the same
+        dates).
         """
         if not bars:
             return
@@ -177,7 +157,6 @@ class MarketBarsStore:
         df = pd.DataFrame(rows)
 
         for year, year_df in df.groupby(DATE_COL + "_year", sort=True):
-            # groupby key is the year (int).
             year_df = year_df.drop(columns=[DATE_COL + "_year"])
             self._write_year(ticker, int(year), year_df)
 
@@ -191,7 +170,6 @@ class MarketBarsStore:
 
         if path.exists():
             existing = pd.read_parquet(path)
-            # Drop any rows for dates we're about to overwrite.
             existing = existing[
                 ~existing[DATE_COL].isin(new_df[DATE_COL].tolist())
             ]
@@ -200,7 +178,6 @@ class MarketBarsStore:
             combined = new_df
 
         combined = combined.sort_values(DATE_COL).reset_index(drop=True)
-        # Cast date back to a consistent dtype.
         combined[DATE_COL] = pd.to_datetime(combined[DATE_COL]).dt.date.astype(
             "date32[pyarrow]"
         )
@@ -212,17 +189,8 @@ class MarketBarsStore:
         tmp.replace(path)
 
 
-# --------------------------------------------------------------------- helpers
-
-
 def _bar_to_row(bar: dict[str, Any], ticker: str) -> dict[str, Any]:
-    """Build a parquet row from upstream shape (t=ms, o/h/l/c, v).
-
-    ``ticker`` is required so the denormalised ticker column is preserved
-    on each row — keeps the file standalone (the ticker could be recovered
-    from the parent directory but having it inline makes the file easier
-    to reason about and consistent with what the service exposes).
-    """
+    """Build a parquet row from upstream shape (t=ms, o/h/l/c, v)."""
     ts_ms = int(bar["t"])
     bar_date = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).date()
     return {
@@ -244,7 +212,6 @@ def _normalise_row(row: dict[str, Any]) -> dict[str, Any]:
     """Strip parquet-only fields + coerce NaN to None."""
     out = dict(row)
     out.pop(DATE_COL + "_year", None)
-    # Pandas gives empty values back as NaN for object columns.
     for k in NULLABLE_COLUMNS + [DATE_COL]:
         if k in out and out[k] is not None and _is_nan(out[k]):
             out[k] = None
@@ -252,7 +219,6 @@ def _normalise_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _is_nan(v: Any) -> bool:
-    # float('nan'), numpy.nan, pandas.NaT, etc.
     try:
         import math
 

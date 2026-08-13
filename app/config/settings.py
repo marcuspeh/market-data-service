@@ -14,27 +14,19 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # Root data directory. Layout under it:
-    #   <data_dir>/market/<TICKER>/<YEAR>.parquet   # daily bars, one file per ticker per year
-    #   <data_dir>/constituents/<TICKER>.parquet   # holdings snapshots, one file per ticker
+    # Layout: <data_dir>/market/<TICKER>/<YEAR>.parquet
+    #         <data_dir>/constituents/<TICKER>.parquet
     data_dir: str = Field(default="./data")
 
-    # Polygon.io
     polygon_api_key: str = Field(default="")
     polygon_base_url: str = Field(default="https://api.polygon.io")
 
-    # Interactive Brokers (via ib-gateway-docker)
-    # ib-gateway-docker maps container ports 4003=live, 4004=paper to the
-    # host as 4001 and 4002 respectively. When running inside docker-compose
-    # we connect to the service name ("ib-gateway") on its container port.
     ibkr_host: str = Field(default="ib-gateway")
     ibkr_trading_mode: str = Field(default="paper")  # "paper" | "live"
     ibkr_port_paper: int = Field(default=4004)
     ibkr_port_live: int = Field(default=4003)
     ibkr_client_id: int = Field(default=1)
     ibkr_timeout_seconds: float = Field(default=10.0)
-
-    # --------------------------------------------------------------- derived
 
     @property
     def market_data_dir(self) -> Path:

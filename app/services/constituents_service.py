@@ -1,14 +1,7 @@
-"""Constituents service.
-
-Reads historical snapshots from a parquet store. If a snapshot for the
-requested date doesn't exist, raises :class:`SnapshotNotFoundError`
-which the route maps to 404.
-
-Refresh is driven by:
-  * ``APScheduler`` job in :mod:`app.services.constituents_scheduler` that
-    runs ~1h before each US trading day and calls
-    :meth:`refresh_symbol` for every supported ticker.
-  * An ad-hoc admin endpoint ``POST /admin/constituents/refresh``.
+"""Constituents service: read snapshots from a parquet store and refresh
+them on schedule. Refresh is driven by the APScheduler job in
+:mod:`app.services.constituents_scheduler` (runs every day at 8:30 ET
+and calls :meth:`refresh_symbol` / :meth:`refresh_all`).
 """
 import logging
 from datetime import date
@@ -49,8 +42,6 @@ class SnapshotNotFoundError(KeyError):
 
 
 class ConstituentsService:
-    """Read-side and write-side operations on the parquet store."""
-
     SUPPORTED_SYMBOLS: set[str] = set(ETF_REGISTRY)
 
     def __init__(self, store: ConstituentsStore | None = None) -> None:
@@ -58,8 +49,6 @@ class ConstituentsService:
             self._store = store
         else:
             self._store = ConstituentsStore(get_settings().constituents_dir)
-
-    # ------------------------------------------------------------------ read
 
     def get_constituents(self, symbol: str, snapshot_date: date) -> dict[str, Any]:
         symbol = symbol.upper()
@@ -81,18 +70,15 @@ class ConstituentsService:
             "source": "parquet",
         }
 
-    # ------------------------------------------------------------------ write
-
     async def refresh_symbol(self, symbol: str, snapshot_date: date) -> int:
-        """Fetch the live holdings for ``symbol`` and persist a snapshot
-        dated ``snapshot_date``. Returns the number of holding rows written."""
+        """Fetch live holdings for ``symbol`` and persist a snapshot.
+        Returns the number of holding rows written."""
         symbol = symbol.upper()
         if symbol not in self.SUPPORTED_SYMBOLS:
             raise UnsupportedSymbolError(symbol, self.SUPPORTED_SYMBOLS)
 
         logger.info(f"Refreshing {symbol} constituents for {snapshot_date}")
         holdings = await fetch_etf_constituents(symbol)
-        # Only the holding ticker is stored; weight / name are dropped.
         tickers = [row["ticker"] for row in holdings]
         self._store.write_snapshot(symbol, snapshot_date, tickers)
         return len(tickers)

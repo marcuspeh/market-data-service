@@ -1,13 +1,9 @@
-"""Cache-and-proxy orchestrator for **daily** OHLCV bars.
+"""Daily OHLCV bar orchestrator.
 
-Strategy:
-    * Historical bars (``start..today-1``) are served from the local
-      parquet cache, backfilled from Polygon on miss, and persisted into
-      per-year files under ``<data_dir>/market/<TICKER>/<YEAR>.parquet``.
-    * Today's bar is sourced live from Interactive Brokers via
-      ``IBKRClient`` and **never** persisted — the current-day bar may
-      still be forming. It is cached in-process with a 5-minute TTL
-      so repeated requests within the window don't hit IBKR.
+Historical bars (start..today-1) come from a parquet cache
+(``<data_dir>/market/<TICKER>/<YEAR>.parquet``) with on-miss Polygon
+backfill. Today's bar is served live by ``IBKRClient`` (5-minute
+in-process TTL) and never persisted — current-day bars update intraday.
 """
 import logging
 from datetime import date, datetime, timedelta, timezone
@@ -34,8 +30,6 @@ class MarketDataService:
         self._polygon = polygon or PolygonClient(settings)
         self._ibkr = ibkr or IBKRClient(settings)
 
-    # ------------------------------------------------------------------ read
-
     async def get_bars(
         self,
         ticker: str,
@@ -53,16 +47,12 @@ class MarketDataService:
         bars: list[dict[str, Any]] = []
         backfilled_bars = 0
 
-        # ----- Historical portion: parquet cache + Polygon backfill ---------
         if start <= historical_end:
             cached = self._store.read_range(ticker, start, historical_end)
             cached_dates = {row["date"] for row in cached}
-            missing = self._missing_dates(
-                start, historical_end, cached_dates
-            )
+            missing = self._missing_dates(start, historical_end, cached_dates)
 
             if missing:
-                # Use the smallest window that covers the missing dates.
                 backfill_start = missing[0]
                 backfill_end = missing[-1]
                 logger.info(
@@ -81,14 +71,11 @@ class MarketDataService:
                 self._store.write_bars(ticker, polygon_bars)
                 backfilled_bars = len(polygon_bars)
 
-                cached = self._store.read_range(
-                    ticker, start, historical_end
-                )
+                cached = self._store.read_range(ticker, start, historical_end)
 
             for row in cached:
                 bars.append({**row, "source": "cache"})
 
-        # ----- Today's bar: IBKR, never cached --------------------------------
         if today <= end:
             logger.info(f"Fetching today's daily bar for {ticker} from IBKR")
             try:
@@ -114,15 +101,13 @@ class MarketDataService:
             "bars": bars,
         }
 
-    # ------------------------------------------------------------------ write
-
     async def backfill_yesterday(self, ticker: str) -> int:
-        """Fetch yesterday's daily bar for ``ticker`` from Polygon and persist it.
+        """Fetch yesterday's daily bar from Polygon and persist it.
 
-        The constituents scheduler calls this after a successful refresh, so
-        the previous trading day's "final" bar is cached exactly once. Today
-        is skipped: today's bar still updates intraday and is served live
-        by IBKR.
+        Called by the constituents scheduler after a successful refresh so
+        the previous trading day's "final" bar is cached exactly once.
+        Today is skipped — today's bar still updates intraday and stays
+        live via IBKR.
         """
         ticker = ticker.upper()
         today = datetime.now(timezone.utc).date()
@@ -140,8 +125,6 @@ class MarketDataService:
         self._store.write_bars(ticker, bars)
         logger.info(f"Cached {ticker} {yesterday} from Polygon")
         return 1
-
-    # ------------------------------------------------------------------ helpers
 
     @staticmethod
     def _missing_dates(
