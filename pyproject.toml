@@ -4,7 +4,6 @@ version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
     "apscheduler>=3.11.3",
-    "asyncmy>=0.2.13",
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
     "ibapi>=9.81.1.post1",
@@ -13,7 +12,6 @@ dependencies = [
     "pyarrow>=25.0.1",
     "pydantic-settings>=2.14.2",
     "requests>=2.34.2",
-    "tortoise-orm>=1.1.7",
     "uvicorn>=0.52.0",
 ]
 
@@ -28,8 +26,3 @@ dev = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
-filterwarnings = [
-    # Tortoise emits a noisy warning when no real DB is configured;
-    # silence it for the test run.
-    "ignore::DeprecationWarning:tortoise.*",
-]

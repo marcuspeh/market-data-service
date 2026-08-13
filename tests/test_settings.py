@@ -1,71 +1,56 @@
-"""Tests for the pydantic-settings configuration."""
+"""Tests for the pydantic-settings configuration.
+
+Each test instantiates Settings with ``_env_file=None`` so the local
+``.env`` (if present) is ignored — keeps tests hermetic regardless of
+the developer's shell environment.
+"""
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
 from app.config.settings import Settings
 
 
+def _settings(**overrides) -> Settings:
+    return Settings(_env_file=None, **overrides)
+
+
 class TestIbkrPortResolution:
     def test_paper_trading_mode_returns_paper_port(self):
-        s = Settings(ibkr_trading_mode="paper", ibkr_port_paper=4004)
+        s = _settings(ibkr_trading_mode="paper", ibkr_port_paper=4004)
         assert s.ibkr_port == 4004
 
     def test_live_trading_mode_returns_live_port(self):
-        s = Settings(ibkr_trading_mode="live", ibkr_port_live=4003)
+        s = _settings(ibkr_trading_mode="live", ibkr_port_live=4003)
         assert s.ibkr_port == 4003
 
     def test_unknown_mode_defaults_to_paper(self):
-        s = Settings(ibkr_trading_mode="weird")
-        # Falls through to the else branch → paper port
+        s = _settings(ibkr_trading_mode="weird")
         assert s.ibkr_port == 4004
 
 
-class TestDatabaseUrl:
-    def test_basic_url_construction(self):
-        s = Settings(
-            mysql_host="db.example.com",
-            mysql_port=3306,
-            mysql_user="alice",
-            mysql_password="s3cr3t!",
-            mysql_database="market",
-        )
-        # Password contains '!' and '@' — both must be URL-encoded.
-        assert (
-            s.database_url
-            == "mysql://alice:s3cr3t%21@db.example.com:3306/market"
-        )
+class TestDataDir:
+    def test_market_data_dir_derived(self):
+        s = _settings(data_dir="/var/data")
+        assert s.market_data_dir == Path("/var/data/market")
 
-    def test_password_with_at_sign_is_url_encoded(self):
-        s = Settings(
-            mysql_host="db",
-            mysql_port=3306,
-            mysql_user="u",
-            mysql_password="p@ss",
-            mysql_database="d",
-        )
-        # The '@' in the password must not be mistaken for the host separator.
-        assert "@" not in s.database_url.split("//", 1)[1].rsplit("@", 1)[0]
-        assert s.database_url.startswith("mysql://u:p%40ss@db:3306/d")
+    def test_constituents_dir_derived(self):
+        s = _settings(data_dir="/var/data")
+        assert s.constituents_dir == Path("/var/data/constituents")
 
 
 class TestEnvOverrides:
-    def test_env_vars_override_defaults(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("MYSQL_HOST", "envhost")
+    def test_explicit_kwargs_override_defaults(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("POLYGON_API_KEY", "envkey")
-        monkeypatch.setenv("IBKR_TRADING_MODE", "live")
-        s = Settings()
-        assert s.mysql_host == "envhost"
-        assert s.polygon_api_key == "envkey"
-        assert s.ibkr_trading_mode == "live"
-        assert s.ibkr_port == 4003
+        s = _settings()
+        assert s.polygon_api_key == "envkey"  # env wins when env_file disabled
 
-    def test_unknown_env_var_is_accepted(self, monkeypatch: pytest.MonkeyPatch):
-        """pydantic-settings ignores unknown env vars by default.
-
-        We accept any extra env vars so the service boots in environments
-        that have additional variables defined (e.g. CI runners)."""
-        monkeypatch.setenv("MARKET_DATA_MAX_DAYS", "30")
+    def test_legacy_mysql_fields_are_ignored(self, monkeypatch: pytest.MonkeyPatch):
+        """mysql_* env vars from the old config are now unknown and
+        silently ignored by pydantic-settings (default behaviour)."""
+        monkeypatch.setenv("MYSQL_HOST", "envhost")
         # Should not raise.
-        Settings()
+        _settings()

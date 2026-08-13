@@ -1,5 +1,6 @@
 from functools import lru_cache
-from urllib.parse import quote_plus
+from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -13,12 +14,10 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # Database (individual MySQL fields)
-    mysql_host: str = Field(default="mysql")
-    mysql_port: int = Field(default=3306)
-    mysql_user: str = Field(default="")
-    mysql_password: str = Field(default="")
-    mysql_database: str = Field(default="")
+    # Root data directory. Layout under it:
+    #   <data_dir>/market/<TICKER>/<YEAR>.parquet   # daily bars, one file per ticker per year
+    #   <data_dir>/constituents/<TICKER>.parquet   # holdings snapshots, one file per ticker
+    data_dir: str = Field(default="./data")
 
     # Polygon.io
     polygon_api_key: str = Field(default="")
@@ -35,8 +34,15 @@ class Settings(BaseSettings):
     ibkr_client_id: int = Field(default=1)
     ibkr_timeout_seconds: float = Field(default=10.0)
 
-    # Constituents store: one parquet file per ticker under this directory.
-    constituents_dir: str = Field(default="./data/constituents")
+    # --------------------------------------------------------------- derived
+
+    @property
+    def market_data_dir(self) -> Path:
+        return Path(self.data_dir) / "market"
+
+    @property
+    def constituents_dir(self) -> Path:
+        return Path(self.data_dir) / "constituents"
 
     @property
     def ibkr_port(self) -> int:
@@ -45,16 +51,6 @@ class Settings(BaseSettings):
             self.ibkr_port_live
             if self.ibkr_trading_mode == "live"
             else self.ibkr_port_paper
-        )
-
-    @property
-    def database_url(self) -> str:
-        # URL-encode credentials so passwords containing @, :, /, etc. don't
-        # break the DSN.
-        user = quote_plus(self.mysql_user)
-        password = quote_plus(self.mysql_password)
-        return (
-            f"mysql://{user}:{password}@{self.mysql_host}:{self.mysql_port}/{self.mysql_database}"
         )
 
 

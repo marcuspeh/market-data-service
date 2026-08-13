@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-import pytest
 from zoneinfo import ZoneInfo
 
 from app.services.constituents_scheduler import ConstituentsScheduler
@@ -53,8 +52,6 @@ class TestScheduleNextRun:
         assert local.minute == 30
 
     def test_run_date_is_in_the_future(self):
-        """The scheduled run date should always be strictly in the future
-        from now — never today, even if 8:30 hasn't passed yet."""
         sch = ConstituentsScheduler(service=MagicMock())
         with patch.object(sch._scheduler, "add_job") as mock_add_job:
             sch._schedule_next_run()
@@ -63,6 +60,53 @@ class TestScheduleNextRun:
         run_at = trigger.run_date
         now = datetime.now(NY_TZ)
         assert run_at > now
-        # And at most 48h in the future — protects against a bug that
-        # accidentally pushes the run date way out.
         assert (run_at - now).total_seconds() < 48 * 3600
+
+
+class TestRefreshAndReschedule:
+    async def test_calls_refresh_then_backfill_yesterday(self):
+        """Verify that after a successful constituents refresh the
+        scheduler calls ``backfill_yesterday`` on the market data
+        service for every ticker that succeeded."""
+        sch = ConstituentsScheduler(
+            service=MagicMock(),
+            market_data_service=MagicMock(),
+        )
+        # Pre-stub the inner method so we don't need a real APScheduler.
+        sch._schedule_next_run = MagicMock()
+
+        async def fake_refresh_all(date_):
+            return {"SPY": 100, "QQQ": 50, "IWM": -1}
+
+        sch._service.refresh_all = fake_refresh_all
+        sch._market_data.backfill_yesterday = MagicMock()
+
+        await sch._refresh_and_reschedule()
+
+        # SPY and QQQ succeeded → should backfill. IWM failed → skipped.
+        call_args = [c.args[0] for c in sch._market_data.backfill_yesterday.call_args_list]
+        assert "SPY" in call_args
+        assert "QQQ" in call_args
+        assert "IWM" not in call_args
+
+        # Always re-armed.
+        sch._schedule_next_run.assert_called_once()
+
+    async def test_backfill_failures_dont_break_refresh_loop(self):
+        sch = ConstituentsScheduler(
+            service=MagicMock(),
+            market_data_service=MagicMock(),
+        )
+        sch._schedule_next_run = MagicMock()
+
+        async def fake_refresh_all(date_):
+            return {"SPY": 1}
+
+        sch._service.refresh_all = fake_refresh_all
+        sch._market_data.backfill_yesterday = MagicMock(
+            side_effect=RuntimeError("boom")
+        )
+
+        # Should NOT raise.
+        await sch._refresh_and_reschedule()
+        sch._schedule_next_run.assert_called_once()

@@ -1,32 +1,18 @@
-"""Tests for MarketDataService orchestration."""
+"""Tests for MarketDataService orchestration against a real
+MarketBarsStore backed by ``tmp_path``."""
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.services.market_data_service import MarketDataService
+from app.services.market_bars_store import MarketBarsStore
 from tests.conftest import FakeSettings
-
-
-def _bar(timestamp: int, weight: float = 100.0) -> dict[str, Any]:
-    """Shape that matches what the repository's .values() would return."""
-    bar_date = datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc).date()
-    return {
-        "ticker": "AAPL",
-        "timestamp": timestamp,
-        "open": weight,
-        "high": weight + 1,
-        "low": weight - 1,
-        "close": weight,
-        "volume": 1000.0,
-        "vwap": weight,
-        "trade_count": 10,
-        "bar_date": bar_date,
-    }
 
 
 def _polygon_bar(timestamp: int) -> dict[str, Any]:
@@ -47,16 +33,29 @@ def _ibkr_bar(timestamp: int) -> dict[str, Any]:
     return _polygon_bar(timestamp)
 
 
+def _ts_for(date_: date) -> int:
+    return int(
+        datetime(date_.year, date_.month, date_.day, tzinfo=timezone.utc).timestamp()
+        * 1000
+    )
+
+
 @pytest.fixture
-def service(fake_settings: FakeSettings) -> MarketDataService:
-    repo = MagicMock()
+def store(tmp_path: Path) -> MarketBarsStore:
+    return MarketBarsStore(tmp_path / "market")
+
+
+@pytest.fixture
+def service(
+    fake_settings: FakeSettings, store: MarketBarsStore
+) -> MarketDataService:
     polygon = MagicMock()
     ibkr = MagicMock()
-    repo.list_in_range = AsyncMock(return_value=[])
-    repo.save_many = AsyncMock()
     polygon.fetch_daily_bars = AsyncMock(return_value=[])
     ibkr.fetch_today_bar = AsyncMock(return_value=None)
-    return MarketDataService(fake_settings, repo=repo, polygon=polygon, ibkr=ibkr)
+    return MarketDataService(
+        fake_settings, store=store, polygon=polygon, ibkr=ibkr
+    )
 
 
 @pytest.fixture
@@ -72,91 +71,75 @@ class TestValidation:
     async def test_ticker_is_uppercased(
         self, service: MarketDataService, today: date
     ):
-        service._repo.list_in_range = AsyncMock(return_value=[])
-        service._ibkr.fetch_today_bar = AsyncMock(return_value=None)
         result = await service.get_bars("aapl", today, today)
         assert result["ticker"] == "AAPL"
         # No historical range because start == today.
-        service._repo.list_in_range.assert_not_called()
+        service._polygon.fetch_daily_bars.assert_not_called()
 
 
 class TestHistoricalOnly:
     async def test_no_polygon_call_when_cache_is_full(
-        self, service: MarketDataService, today: date
+        self, service: MarketDataService, store: MarketBarsStore, today: date
     ):
         # Small window, cache covers every day in it.
-        end = today.replace() - __import__("datetime").timedelta(days=1)
-        start = end.replace() - __import__("datetime").timedelta(days=4)
+        end = today - timedelta(days=1)
+        start = end - timedelta(days=4)
 
-        timestamps = [
-            int(datetime(today.year, today.month, today.day, tzinfo=timezone.utc).timestamp() * 1000)
-            - i * 86_400_000
-            for i in range(1, 6)
-        ]
-        cached = [_bar(ts) for ts in timestamps]
-        service._repo.list_in_range = AsyncMock(return_value=cached)
+        for d in range(1, 6):
+            d_ = end - timedelta(days=d - 1)
+            store.write_bars("AAPL", [_polygon_bar(_ts_for(d_))])
 
         result = await service.get_bars("AAPL", start, end)
-
         service._polygon.fetch_daily_bars.assert_not_called()
-        service._repo.save_many.assert_not_called()
         assert all(b["source"] == "cache" for b in result["bars"])
 
     async def test_backfills_from_polygon_for_missing_dates(
-        self, service: MarketDataService, today: date
+        self, service: MarketDataService, store: MarketBarsStore, today: date
     ):
-        end = today.replace() - __import__("datetime").timedelta(days=1)
-        start = end.replace() - __import__("datetime").timedelta(days=5)
+        end = today - timedelta(days=1)
+        start = end - timedelta(days=5)
 
-        # Cache is empty → all 6 dates missing.
-        service._repo.list_in_range = AsyncMock(return_value=[])
+        # Cache is empty.
         service._polygon.fetch_daily_bars = AsyncMock(
-            return_value=[_polygon_bar(1700000000000 + i * 86_400_000) for i in range(6)]
+            return_value=[
+                _polygon_bar(_ts_for(end - timedelta(days=i))) for i in range(6)
+            ]
         )
 
         result = await service.get_bars("AAPL", start, end)
 
         service._polygon.fetch_daily_bars.assert_called_once()
-        service._repo.save_many.assert_called_once()
         assert result["backfilled_bars"] == 6
+        # After backfill, the cache should contain those bars.
+        cached = store.read_range("AAPL", start, end)
+        assert len(cached) == 6
 
     async def test_backfill_window_uses_min_max_of_missing_dates(
         self, service: MarketDataService, today: date
     ):
         """When only a few dates are missing in the middle of the window,
         Polygon should only be asked for the smallest covering range."""
-        from datetime import timedelta
-
-        # 10-day historical window ending yesterday.
         end = today - timedelta(days=1)
         start = end - timedelta(days=9)
 
-        # Cache covers every day EXCEPT days 4 and 5 (the middle of the
-        # window). We compute the cached timestamps so they line up with
-        # specific dates in the window.
-        today_ts = int(
-            datetime(today.year, today.month, today.day, tzinfo=timezone.utc).timestamp() * 1000
-        )
-        end_ts = today_ts - 86_400_000  # end = yesterday
-        ts_for = lambda d: end_ts - d * 86_400_000  # d=0 → end, d=1 → day before end, ...
-
-        cached_timestamps = [
-            ts_for(d) for d in [0, 1, 2, 3, 6, 7, 8, 9]  # skip 4 and 5
-        ]
-        cached = [_bar(ts) for ts in cached_timestamps]
-
-        service._repo.list_in_range = AsyncMock(side_effect=[cached, cached])
+        # Pre-seed the cache so that days 0,1,2,3,6,7,8,9 are cached.
+        # Days 4,5 are missing.
         service._polygon.fetch_daily_bars = AsyncMock(return_value=[])
+        service._store.write_bars("AAPL", [
+            _polygon_bar(_ts_for(end - timedelta(days=d))) for d in [0, 1, 2, 3, 6, 7, 8, 9]
+        ])
+
+        # Reset the mock so it doesn't capture the write-back above.
+        service._polygon.fetch_daily_bars.reset_mock()
 
         await service.get_bars("AAPL", start, end)
 
         # The Polygon window should be just [start+4, start+5] — the
         # two missing days — not the full 10-day window.
-        # (fetch_daily_bars is called positionally.)
         args = service._polygon.fetch_daily_bars.call_args.args
-        assert args[0] == "AAPL"      # ticker
-        assert args[1] == start + timedelta(days=4)  # backfill_start
-        assert args[2] == start + timedelta(days=5)  # backfill_end
+        assert args[0] == "AAPL"
+        assert args[1] == start + timedelta(days=4)
+        assert args[2] == start + timedelta(days=5)
 
 
 class TestToday:
@@ -164,52 +147,43 @@ class TestToday:
         self, service: MarketDataService, today: date
     ):
         service._ibkr.fetch_today_bar = AsyncMock(
-            return_value=_ibkr_bar(1763000000000)
+            return_value=_ibkr_bar(_ts_for(today))
         )
         result = await service.get_bars("AAPL", today, today)
-
         service._ibkr.fetch_today_bar.assert_called_once_with("AAPL")
         ibkr_bars = [b for b in result["bars"] if b["source"] == "ibkr"]
         assert len(ibkr_bars) == 1
 
     async def test_no_ibkr_call_when_end_is_yesterday(
-        self, service: MarketDataService, today: date
+        self, service: MarketDataService, store: MarketBarsStore, today: date
     ):
-        end = today.replace() - __import__("datetime").timedelta(days=1)
-        start = end
-        service._repo.list_in_range = AsyncMock(
-            return_value=[_bar(1700000000000)]
-        )
-
-        result = await service.get_bars("AAPL", start, end)
-
+        end = today - timedelta(days=1)
+        store.write_bars("AAPL", [_polygon_bar(_ts_for(end))])
+        result = await service.get_bars("AAPL", end, end)
         service._ibkr.fetch_today_bar.assert_not_called()
         assert all(b["source"] == "cache" for b in result["bars"])
 
     async def test_ibkr_none_result_is_silently_skipped(
         self, service: MarketDataService, today: date
     ):
-        """If IBKR returns no bar yet today, we don't blow up."""
         service._ibkr.fetch_today_bar = AsyncMock(return_value=None)
         result = await service.get_bars("AAPL", today, today)
         assert result["bars"] == []
 
     async def test_bars_are_sorted_by_timestamp(
-        self, service: MarketDataService, today: date
+        self, service: MarketDataService, store: MarketBarsStore, today: date
     ):
-        end = today.replace() - __import__("datetime").timedelta(days=2)
-        start = end
-
-        # Return cached bars out of order to make sure the service sorts.
-        ts1, ts2 = 1700000000000, 1700086400000
-        service._repo.list_in_range = AsyncMock(
-            return_value=[_bar(ts2), _bar(ts1)]
+        end = today - timedelta(days=2)
+        # Cache has the older bar; new bar comes from IBKR.
+        store.write_bars(
+            "AAPL",
+            [_polygon_bar(_ts_for(end)), _polygon_bar(_ts_for(end - timedelta(days=1)))],
         )
         service._ibkr.fetch_today_bar = AsyncMock(
-            return_value=_ibkr_bar(1763000000000)
+            return_value=_ibkr_bar(_ts_for(today))
         )
 
-        result = await service.get_bars("AAPL", start, today)
+        result = await service.get_bars("AAPL", end - timedelta(days=1), today)
         timestamps = [b["timestamp"] for b in result["bars"]]
         assert timestamps == sorted(timestamps)
 
@@ -220,15 +194,14 @@ class TestErrorMapping:
     ):
         from app.clients.polygon import PolygonError
 
-        service._repo.list_in_range = AsyncMock(return_value=[])
         service._polygon.fetch_daily_bars = AsyncMock(
             side_effect=PolygonError("polygon boom")
         )
         with pytest.raises(PolygonError, match="polygon boom"):
             await service.get_bars(
                 "AAPL",
-                today.replace() - __import__("datetime").timedelta(days=3),
-                today.replace() - __import__("datetime").timedelta(days=1),
+                today - timedelta(days=3),
+                today - timedelta(days=1),
             )
 
     async def test_ibkr_error_propagates(
@@ -241,3 +214,37 @@ class TestErrorMapping:
         )
         with pytest.raises(IBKRError, match="ibkr boom"):
             await service.get_bars("AAPL", today, today)
+
+
+class TestBackfillYesterday:
+    async def test_writes_yesterdays_bar_only(
+        self, service: MarketDataService, store: MarketBarsStore
+    ):
+        from app.clients.polygon import PolygonError
+
+        yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
+        service._polygon.fetch_daily_bars = AsyncMock(
+            return_value=[_polygon_bar(_ts_for(yesterday))]
+        )
+
+        count = await service.backfill_yesterday("AAPL")
+        assert count == 1
+
+        cached = store.read_range("AAPL", yesterday, yesterday)
+        assert len(cached) == 1
+
+    async def test_returns_zero_when_polygon_returns_no_bar(
+        self, service: MarketDataService
+    ):
+        service._polygon.fetch_daily_bars = AsyncMock(return_value=[])
+        assert await service.backfill_yesterday("AAPL") == 0
+
+    async def test_returns_zero_on_polygon_error(
+        self, service: MarketDataService
+    ):
+        from app.clients.polygon import PolygonError
+
+        service._polygon.fetch_daily_bars = AsyncMock(
+            side_effect=PolygonError("down")
+        )
+        assert await service.backfill_yesterday("AAPL") == 0

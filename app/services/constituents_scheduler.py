@@ -1,8 +1,16 @@
 """APScheduler-driven constituents refresh.
 
 Schedules a daily job that runs at 8:30 AM America/New_York — every
-day, regardless of whether it's a US trading day. The job refreshes
-every supported ETF via :meth:`ConstituentsService.refresh_all`.
+day, regardless of whether it's a US trading day. The job does two
+things:
+
+  1. Refreshes every supported ETF's holdings via
+     :meth:`ConstituentsService.refresh_all`.
+  2. For every ticker the constituents service processed, also
+     persists **yesterday's** daily bar to the parquet cache via
+     :meth:`MarketDataService.backfill_yesterday`. By the time the
+     scheduler fires at 8:30 ET, the previous trading day's bar is
+     final and safe to cache once.
 
 Designed to be started/stopped alongside the FastAPI lifespan.
 """
@@ -21,16 +29,24 @@ except ImportError:  # pragma: no cover — only on Python <3.9
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 
+from app.config.settings import get_settings
 from app.services.constituents_service import ConstituentsService
+from app.services.market_data_service import MarketDataService
 
 logger = logging.getLogger(__name__)
 
 
 class ConstituentsScheduler:
-    """Wraps an :class:`AsyncIOScheduler` configured for constituents refresh."""
+    """Drives the daily constituents refresh + yesterday's bar backfill."""
 
-    def __init__(self, service: ConstituentsService | None = None) -> None:
+    def __init__(
+        self,
+        service: ConstituentsService | None = None,
+        market_data_service: MarketDataService | None = None,
+    ) -> None:
+        settings = get_settings()
         self._service = service or ConstituentsService()
+        self._market_data = market_data_service or MarketDataService(settings)
         self._scheduler = AsyncIOScheduler(timezone=str(NY_TZ))
         self._started = False
 
@@ -57,9 +73,6 @@ class ConstituentsScheduler:
     def _schedule_next_run(self) -> None:
         """Schedule the next refresh for 8:30 AM New York tomorrow."""
         now_ny = datetime.now(NY_TZ)
-        # Always target tomorrow at 8:30 ET — never today, even if 8:30
-        # hasn't passed yet, because the upstream provider may already
-        # have served the data earlier and re-running just wastes quota.
         tomorrow = (now_ny + timedelta(days=1)).date()
         run_at = datetime.combine(tomorrow, time(8, 30), tzinfo=NY_TZ)
 
@@ -73,11 +86,25 @@ class ConstituentsScheduler:
         logger.info(f"Next constituents refresh scheduled at {run_at.isoformat()}")
 
     async def _refresh_and_reschedule(self) -> None:
-        """Refresh all tickers, then schedule the next run."""
+        """Refresh constituents + backfill yesterday's bar, then re-arm."""
         snap_date = datetime.now(NY_TZ).date()
         try:
             results = await self._service.refresh_all(snap_date)
-            logger.info(f"Scheduled refresh complete for {snap_date}: {results}")
+            logger.info(
+                f"Scheduled constituents refresh complete for {snap_date}: "
+                f"{results}"
+            )
+
+            # For every ticker that the constituents refresh just succeeded
+            # for, also persist yesterday's bar to the parquet cache.
+            for ticker, count in results.items():
+                if count < 1:
+                    # Refresh failed for this ticker (count == -1); skip.
+                    continue
+                try:
+                    self._market_data.backfill_yesterday(ticker)
+                except Exception as e:  # noqa: BLE001
+                    logger.error(f"backfill_yesterday failed for {ticker}: {e}")
         except Exception as e:  # noqa: BLE001
             logger.error(f"Scheduled refresh failed for {snap_date}: {e}")
         finally:

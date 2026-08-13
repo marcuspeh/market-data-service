@@ -13,10 +13,38 @@ import pytest
 def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Wipe MySQL/Polygon/IBKR-related env vars so settings doesn't pick
     them up from the developer's shell during tests. Anything tests
-    actually want to set should be set explicitly inside the test."""
+    actually want to set should be set explicitly inside the test.
+
+    Also replaces ``get_settings()`` across the codebase with a hermetic
+    instance that ignores the local .env file — so the scheduler / services
+    that call ``get_settings()`` don't pick up legacy MYSQL_* keys still
+    living in the developer's .env.
+    """
     for key in list(os.environ):
-        if key.startswith(("MYSQL_", "POLYGON_", "IBKR_", "APP_")):
+        if key.startswith(("MYSQL_", "POLYGON_", "IBKR_", "APP_", "DATA_")):
             monkeypatch.delenv(key, raising=False)
+
+    import app.config.settings as settings_module
+
+    hermetic_settings = settings_module.Settings(_env_file=None)
+    settings_module.get_settings.cache_clear()
+
+    def _get_hermetic():
+        return hermetic_settings
+
+    # Patch every module that may have imported the function at load time.
+    for module_name in (
+        "app.config.settings",
+        "app.services.constituents_scheduler",
+        "app.services.constituents_service",
+        "app.services.market_data_service",
+    ):
+        try:
+            monkeypatch.setattr(
+                f"{module_name}.get_settings", _get_hermetic, raising=False
+            )
+        except AttributeError:
+            pass
 
 
 @dataclass
