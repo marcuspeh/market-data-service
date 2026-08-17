@@ -46,7 +46,9 @@ USER app
 # Copy the resolved venv and the application source.
 COPY --from=builder --chown=app:app /app /app
 
-EXPOSE 8001
+EXPOSE 3556
 
 # Use uvicorn directly for a stable, production-grade ASGI runner.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+# Port 3556 must match the in-container port in docker-compose.yml's
+# `${APP_PORT:-8001}:3556` mapping.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3556"]

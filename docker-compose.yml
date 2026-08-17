@@ -39,6 +39,9 @@ services:
       IBKR_TRADING_MODE: ${IBKR_TRADING_MODE:-paper}
       IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-1}
       IBKR_TIMEOUT_SECONDS: ${IBKR_TIMEOUT_SECONDS:-10}
+    # Bind to 0.0.0.0 so the API is reachable from outside the host
+    # (e.g. from another machine on the LAN). The in-container port (3556)
+    # must match the port uvicorn listens on inside the container.
     ports:
       - "${APP_PORT:-8001}:3556"
     volumes:
