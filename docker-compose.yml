@@ -9,7 +9,8 @@ services:
     environment:
       - TWSUSERID=${IB_USER}
       - TWSPASSWORD=${IB_PASSWORD}
-      - TRADING_MODE=paper 
+      - TRADING_MODE=paper
+      - TWS_ACCEPT_INCOMING=${TWS_ACCEPT_INCOMING:-accept}
       - AUTO_RESTART_IB=yes
     ports:
       - "127.0.0.1:5900:5900"
