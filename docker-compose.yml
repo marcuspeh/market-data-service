@@ -1,32 +1,15 @@
 name: market-data-service
 
-# The named volume `market_data_data` backs the parquet cache at
-# /var/lib/market-data so cache survives `docker compose down` and image
-# rebuilds. Wipe it with `docker compose down -v`.
-#
-# MySQL is expected to already be running in another docker stack and
-# reachable as the service hostname "mysql" on the externally-managed
-# bridge network "market-data-net". Both services attach to that
-# external network AND an internal private network.
-#
-# One-time setup:
-#   docker network create market-data-net
-#   docker network connect market-data-net <your-existing-mysql-container>
-
 services:
-  ib-gateway:
+  ib-gateway-market-data:
     # gnzsnz/ib-gateway-docker — container ports: 4003=live, 4004=paper, 5900=VNC.
     image: ghcr.io/gnzsnz/ib-gateway:latest
     restart: unless-stopped
     environment:
-      TWS_USERID: ${IBKR_TWS_USERID:?set IBKR_TWS_USERID in .env}
-      TWS_PASSWORD: ${IBKR_TWS_PASSWORD:?set IBKR_TWS_PASSWORD in .env}
-      TRADING_MODE: ${IBKR_TRADING_MODE:-paper}
-      TWS_ACCEPT_INCOMING: ${IBKR_ACCEPT_INCOMING:-manual}
-      TWOFA_TIMEOUT_ACTION: ${IBKR_TWOFA_TIMEOUT_ACTION:-exit}
-      TIME_ZONE: ${IBKR_TIME_ZONE:-Etc/UTC}
-      TZ: ${IBKR_TIME_ZONE:-Etc/UTC}
-    # 2FA / API-connection approval is done via VNC the first time.
+      - TWSUSERID=${IB_USER}
+      - TWSPASSWORD=${IB_PASSWORD}
+      - TRADING_MODE=paper 
+      - AUTO_RESTART_IB=yes
     ports:
       - "127.0.0.1:5900:5900"
     healthcheck:
@@ -36,43 +19,32 @@ services:
       retries: 10
       start_period: 120s
     networks:
-      market-data-net:
-        aliases:
-          - ib-gateway
-      market-data:
+      - market-data-net
 
-  app:
+  market-data:
     build:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
-      ib-gateway:
+      ib-gateway-market-data:
         condition: service_started
     environment:
       DATA_DIR: /var/lib/market-data
       POLYGON_API_KEY: ${POLYGON_API_KEY:-}
-      IBKR_HOST: ib-gateway
+      IBKR_HOST: ib-gateway-market-data
       IBKR_TRADING_MODE: ${IBKR_TRADING_MODE:-paper}
       IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-1}
       IBKR_TIMEOUT_SECONDS: ${IBKR_TIMEOUT_SECONDS:-10}
     ports:
-      - "${APP_PORT:-8001}:8001"
+      - "${APP_PORT:-8001}:3556"
     volumes:
       - market_data_data:/var/lib/market-data
     networks:
-      market-data-net:
-        aliases:
-          - app
-      market-data:
+      - market-data-net
 
 networks:
-  # Pre-existing bridge carrying the MySQL container from another stack.
   market-data-net:
-    external: true
-    name: market-data-net
-  # Internal — used only for app ↔ ib-gateway traffic.
-  market-data:
     driver: bridge
 
 volumes:

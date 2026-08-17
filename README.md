@@ -4,9 +4,9 @@ A small FastAPI service that:
 
 - **Proxies ETF constituents** (SPY, QQQ, IWM) from multiple data providers
   (SSGA, iShares) behind a single, provider-agnostic REST endpoint.
-- **Caches market data** (OHLCV bars) from Polygon.io with a configurable
-  cache horizon so repeated requests don't re-hit the upstream API.
-- Caches results in **MySQL** via the [Tortoise ORM](https://tortoise.github.io/).
+- **Caches market data** (OHLCV bars) from Polygon.io on local disk
+  (parquet) with a configurable cache horizon so repeated requests don't
+  re-hit the upstream API.
 
 ## Project layout
 
@@ -20,10 +20,6 @@ A small FastAPI service that:
 │   │   └── polygon.py
 │   ├── config/
 │   │   └── settings.py   # Settings (loaded from .env via pydantic-settings)
-│   ├── database/
-│   │   ├── models/       # Tortoise ORM models
-│   │   ├── repositories/ # Async data access
-│   │   └── session.py    # init/close Tortoise connections
 │   ├── services/
 │   │   ├── constituents_fetcher.py   # Provider dispatch + registry
 │   │   ├── constituents_service.py   # Cache + fetch orchestration
@@ -32,9 +28,8 @@ A small FastAPI service that:
 │   │       ├── ssga.py
 │   │       └── ishares.py
 │   └── main.py           # FastAPI app + lifespan
-├── migrations/           # Idempotent SQL migrations (MySQL)
 ├── Dockerfile            # Container image (multi-stage, uv-based)
-├── docker-compose.yml    # app + MySQL + ib-gateway-docker
+├── docker-compose.yml    # app + ib-gateway-docker
 ├── .dockerignore
 ├── pyproject.toml        # uv-managed dependencies
 └── uv.lock
@@ -44,7 +39,6 @@ A small FastAPI service that:
 
 - Python 3.13+
 - [uv](https://docs.astral.sh/uv/) (manages the venv + dependencies)
-- MySQL 8.x reachable from the app
 - (For Polygon-backed endpoints) a Polygon.io API key
 
 ## Setup
@@ -55,17 +49,8 @@ uv sync
 
 # 2. Copy and edit the env file
 cp .env.example .env
-# then fill in MYSQL_* and POLYGON_API_KEY
-
-# 3. Apply the SQL migrations
-mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" \
-      -u "$MYSQL_USER" -p "$MYSQL_DATABASE" \
-      < migrations/01_initial_db_setup.sql
+# then fill in POLYGON_API_KEY and IBKR_* as needed
 ```
-
-> Note: the app also calls `Tortoise.generate_schemas()` at startup, so the
-> tables will be created automatically if they don't exist. The migrations
-> folder exists for explicit, reviewable DDL and CI/DBA workflows.
 
 ## Run
 
@@ -81,38 +66,28 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8001
 
 Brings up the app and
 [gnzsnz/ib-gateway-docker](https://github.com/gnzsnz/ib-gateway-docker).
-**MySQL is expected to already be running in another docker stack** and
-reachable as the service hostname `mysql` on the bridge network
-`market-data-net`. The app and ib-gateway both attach to that external
-network so they can reach MySQL.
 
 ```bash
-# 1. One-time: create the shared network and attach your MySQL container
-docker network create market-data-net
-docker network connect market-data-net <your-existing-mysql-container>
-
-# 2. Fill in the IBKR + Polygon + MySQL credentials
+# 1. Fill in the IBKR + Polygon credentials
 cp .env.example .env
-$EDITOR .env   # set MYSQL_PASSWORD, MYSQL_DATABASE, IBKR_TWS_USERID,
-               #     IBKR_TWS_PASSWORD, POLYGON_API_KEY, ...
+$EDITOR .env   # set IBKR_TWS_USERID, IBKR_TWS_PASSWORD, POLYGON_API_KEY, ...
 
-# 3. Launch everything (app + ib-gateway)
+# 2. Launch everything (app + ib-gateway)
 docker compose up -d
 
-# 4. First-time IBKR setup
+# 3. First-time IBKR setup
 #    VNC into the gateway at localhost:5900 (no password by default;
 #    set VNC_SERVER_PASSWORD to change) and:
 #      - complete 2FA
 #      - in TWS, accept the incoming API connection for clientId=1
 #    Then set IBKR_ACCEPT_INCOMING=auto in .env and restart ib-gateway.
 
-# 5. Tail logs
+# 4. Tail logs
 docker compose logs -f app
 ```
 
 The app is exposed on `localhost:8001`; the gateway's VNC on
-`localhost:5900`. Inside the networks the app connects to MySQL via
-`mysql:3306` (on `market-data-net`) and to the gateway via
+`localhost:5900`. The app reaches the gateway via
 `ib-gateway:4004` (paper) or `ib-gateway:4003` (live), depending on
 `IBKR_TRADING_MODE`.
 
@@ -123,11 +98,6 @@ All settings come from environment variables (or a `.env` file via
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MYSQL_HOST` | `mysql` | MySQL host |
-| `MYSQL_PORT` | `3306` | MySQL port |
-| `MYSQL_USER` | _empty_ | MySQL user |
-| `MYSQL_PASSWORD` | _empty_ | MySQL password |
-| `MYSQL_DATABASE` | _empty_ | MySQL database |
 | `POLYGON_API_KEY` | _empty_ | Polygon.io API key |
 | `POLYGON_BASE_URL` | `https://api.polygon.io` | Override Polygon base URL |
 | `IBKR_HOST` | `ib-gateway` | Hostname of the IB Gateway / TWS API |
@@ -203,9 +173,9 @@ curl -X POST 'http://localhost:8001/admin/constituents/refresh'
 ### `GET /market-data/{ticker}`
 
 Returns **daily** OHLCV bars for a ticker. Historical bars (`from..today-1`)
-are served from the local MySQL cache, backfilled from Polygon.io on miss.
-Today's bar is fetched live from Interactive Brokers (via
-`IBKRClient`) and **never persisted** — it may still be forming.
+are served from the local disk cache (parquet), backfilled from
+Polygon.io on miss. Today's bar is fetched live from Interactive Brokers
+(via `IBKRClient`) and **never persisted** — it may still be forming.
 
 | Query param | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -213,8 +183,8 @@ Today's bar is fetched live from Interactive Brokers (via
 | `to` | `YYYY-MM-DD` | today | End date (inclusive) |
 
 Any time range is supported. Each bar in the response is tagged with
-`source` — `"cache"` for historical bars served from MySQL, `"ibkr"` for
-today's live bar from Interactive Brokers.
+`source` — `"cache"` for historical bars served from the local cache,
+`"ibkr"` for today's live bar from Interactive Brokers.
 
 ```bash
 curl 'http://localhost:8001/market-data/AAPL?from=2026-07-01&to=2026-08-01'
@@ -250,13 +220,6 @@ curl 'http://localhost:8001/market-data/AAPL?from=2026-07-01&to=2026-08-01'
 
 No other code changes are needed — the service auto-derives its
 `SUPPORTED_SYMBOLS` set from the registry.
-
-## Adding a database migration
-
-Create a new file `migrations/NN_description.sql` (zero-padded sequence
-number). Use `CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`,
-etc., so the script is idempotent. See
-[`migrations/README.md`](migrations/README.md) for details.
 
 ## License
 

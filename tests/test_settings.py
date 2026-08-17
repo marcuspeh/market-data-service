@@ -47,10 +47,3 @@ class TestEnvOverrides:
         monkeypatch.setenv("POLYGON_API_KEY", "envkey")
         s = _settings()
         assert s.polygon_api_key == "envkey"  # env wins when env_file disabled
-
-    def test_legacy_mysql_fields_are_ignored(self, monkeypatch: pytest.MonkeyPatch):
-        """mysql_* env vars from the old config are now unknown and
-        silently ignored by pydantic-settings (default behaviour)."""
-        monkeypatch.setenv("MYSQL_HOST", "envhost")
-        # Should not raise.
-        _settings()

@@ -11,17 +11,15 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Wipe MySQL/Polygon/IBKR-related env vars so settings doesn't pick
-    them up from the developer's shell during tests. Anything tests
-    actually want to set should be set explicitly inside the test.
+    """Wipe Polygon/IBKR-related env vars so settings doesn't pick them
+    up from the developer's shell during tests. Anything tests actually
+    want to set should be set explicitly inside the test.
 
     Also replaces ``get_settings()`` across the codebase with a hermetic
-    instance that ignores the local .env file — so the scheduler / services
-    that call ``get_settings()`` don't pick up legacy MYSQL_* keys still
-    living in the developer's .env.
+    instance that ignores the local .env file.
     """
     for key in list(os.environ):
-        if key.startswith(("MYSQL_", "POLYGON_", "IBKR_", "APP_", "DATA_")):
+        if key.startswith(("POLYGON_", "IBKR_", "APP_", "DATA_")):
             monkeypatch.delenv(key, raising=False)
 
     import app.config.settings as settings_module
