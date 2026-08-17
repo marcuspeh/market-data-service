@@ -15,7 +15,10 @@ services:
     ports:
       - "127.0.0.1:5900:5900"
     healthcheck:
-      test: ["CMD-SHELL", "ss -lnt 'sport = :4003 or sport = :4004' | grep -q LISTEN || exit 1"]
+      test: [      
+        "CMD-SHELL",
+        "bash -c '</dev/tcp/127.0.0.1/4004' >/dev/null 2>&1 || exit 1"
+      ]
       interval: 30s
       timeout: 5s
       retries: 10
@@ -40,10 +43,10 @@ services:
       IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-1}
       IBKR_TIMEOUT_SECONDS: ${IBKR_TIMEOUT_SECONDS:-10}
     # Bind to 0.0.0.0 so the API is reachable from outside the host
-    # (e.g. from another machine on the LAN). The in-container port (3556)
+    # (e.g. from another machine on the LAN). The in-container port (8001)
     # must match the port uvicorn listens on inside the container.
     ports:
-      - "${APP_PORT:-8001}:3556"
+      - "${APP_PORT:-3556}:8001"
     volumes:
       - market_data_data:/var/lib/market-data
     networks:
