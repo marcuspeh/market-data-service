@@ -31,7 +31,7 @@ services:
         condition: service_started
     environment:
       DATA_DIR: /var/lib/market-data
-      POLYGON_API_KEY: ${POLYGON_API_KEY:-}
+      POLYGON_API_KEY: ${POLYGON_API_KEY}
       IBKR_HOST: ib-gateway-market-data
       IBKR_TRADING_MODE: ${IBKR_TRADING_MODE:-paper}
       IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-1}
