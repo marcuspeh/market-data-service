@@ -4,6 +4,7 @@ services:
   ib-gateway-market-data:
     # gnzsnz/ib-gateway-docker — container ports: 4003=live, 4004=paper, 5900=VNC.
     image: ghcr.io/gnzsnz/ib-gateway:latest
+    container_name: ib-gateway-market-data
     restart: unless-stopped
     environment:
       - TWSUSERID=${IB_USER}
@@ -26,6 +27,7 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    container_name: market-data
     depends_on:
       ib-gateway-market-data:
         condition: service_started
