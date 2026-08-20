@@ -2,18 +2,15 @@ name: market-data-service
 
 services:
   ib-gateway-market-data:
-    # gnzsnz/ib-gateway-docker — container ports: 4003=live, 4004=paper, 5900=VNC.
-    image: ghcr.io/gnzsnz/ib-gateway:latest
+    image: gnzsnz/ib-gateway:latest
     container_name: ib-gateway-market-data
     restart: unless-stopped
     environment:
-      - TWSUSERID=${IB_USER}
-      - TWSPASSWORD=${IB_PASSWORD}
+      - TWS_USERID=${IB_USER}
+      - TWS_PASSWORD=${IB_PASSWORD}
       - TRADING_MODE=paper
-      - TWS_ACCEPT_INCOMING=${TWS_ACCEPT_INCOMING:-accept}
-      - AUTO_RESTART_IB=yes
     ports:
-      - "127.0.0.1:5900:5900"
+      - "127.0.0.1:4004:4004"
     healthcheck:
       test: [      
         "CMD-SHELL",
@@ -39,7 +36,7 @@ services:
       DATA_DIR: /var/lib/market-data
       POLYGON_API_KEY: ${POLYGON_API_KEY}
       IBKR_HOST: ib-gateway-market-data
-      IBKR_TRADING_MODE: ${IBKR_TRADING_MODE:-paper}
+      IBKR_TRADING_MODE: paper
       IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-1}
       IBKR_TIMEOUT_SECONDS: ${IBKR_TIMEOUT_SECONDS:-10}
     # Bind to 0.0.0.0 so the API is reachable from outside the host
@@ -48,7 +45,7 @@ services:
     ports:
       - "${APP_PORT:-3556}:8001"
     volumes:
-      - market_data_data:/var/lib/market-data
+      - /home/marcuspeh/data/market-data:/var/lib/market-data
     networks:
       - market-data-net
 
