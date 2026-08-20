@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from app.clients.ibkr import IBKRError, IBKRClient
+from app.clients.ibkr import IBKRError, IBKRClient, _BarCollector
 from tests.conftest import FakeSettings
 
 
@@ -157,6 +157,41 @@ class TestSingleFlight:
         assert all(r == results[0] for r in results)
         assert call_count == 1
         assert max_active == 1, "single-flight should serialize concurrent requests"
+
+
+class TestIBKRErrorHandling:
+    @pytest.mark.parametrize(
+        ("code", "message"),
+        [
+            (2104, "Market data farm connection is OK:hfarm"),
+            (2106, "HMDS data farm connection is OK:apachmds"),
+            (2107, "Historical data farm connection has become inactive"),
+            (2108, "Market data farm connection has become inactive"),
+            (2158, "Sec-def data farm connection is OK"),
+        ],
+    )
+    def test_informational_status_is_not_fatal(self, code, message):
+        loop = asyncio.new_event_loop()
+        future = loop.create_future()
+        collector = _BarCollector(loop, future)
+
+        try:
+            collector.error(1, code, message)
+            assert not future.done()
+        finally:
+            loop.close()
+
+    def test_other_market_data_error_is_fatal(self):
+        loop = asyncio.new_event_loop()
+        future = loop.create_future()
+        collector = _BarCollector(loop, future)
+
+        try:
+            collector.error(1, 2105, "Historical data farm connection is broken")
+            with pytest.raises(IBKRError, match="IBKR error 2105"):
+                loop.run_until_complete(future)
+        finally:
+            loop.close()
 
 
 class TestErrorPropagation:

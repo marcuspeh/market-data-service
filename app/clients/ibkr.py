@@ -27,6 +27,7 @@ from app.config.settings import Settings
 logger = logging.getLogger(__name__)
 
 DEFAULT_CACHE_TTL_SECONDS = 300.0  # 5 minutes
+INFORMATIONAL_STATUS_CODES = frozenset({2104, 2106, 2107, 2108, 2158})
 
 
 class IBKRError(RuntimeError):
@@ -78,6 +79,10 @@ class _BarCollector(EWrapper):
             self._loop.call_soon_threadsafe(self._fut.set_result, self.bars)
 
     def error(self, reqId, errorCode, errorString, advancedOrderRejectJson=""):
+        if errorCode in INFORMATIONAL_STATUS_CODES:
+            logger.info(f"IBKR status {errorCode}: {errorString}")
+            return
+
         msg = f"IBKR error {errorCode}: {errorString}"
         logger.warning(msg)
         if not self._fut.done():
