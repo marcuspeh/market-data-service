@@ -16,19 +16,20 @@ ARG IB_GATEWAY_IMAGE=ghcr.io/gnzsnz/ib-gateway:latest
 
 FROM ${IB_GATEWAY_IMAGE} AS base
 
-# Install Python 3.13 plus the small toolchain the project needs.
-# uv is pinned for reproducibility.
+# Install Python (Ubuntu 24.04's stock python3.12) plus the small
+# toolchain the project needs. uv is pinned for reproducibility.
 USER root
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    UV_PYTHON=python3.12
 
 RUN apt-get update -y \
  && apt-get install --no-install-recommends --yes \
-        python3.13 python3.13-venv python3.13-dev \
+        python3.12 python3.12-venv python3.12-dev \
         build-essential ca-certificates curl \
- && ln -sf /usr/bin/python3.13 /usr/bin/python3 \
- && ln -sf /usr/bin/python3.13 /usr/bin/python \
+ && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
+ && ln -sf /usr/bin/python3.12 /usr/bin/python \
  && curl -sSfL https://github.com/astral-sh/uv/releases/download/0.5.11/uv-installer.sh \
     | env UV_UNMANAGED_INSTALL=/usr/local/bin sh \
  && apt-get clean \
