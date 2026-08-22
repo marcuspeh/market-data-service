@@ -21,7 +21,9 @@ class Settings(BaseSettings):
     polygon_api_key: str = Field(default="")
     polygon_base_url: str = Field(default="https://api.polygon.io")
 
-    ibkr_host: str = Field(default="ib-gateway")
+    # Paper trading is the only mode supported in this deployment;
+    # the host/port/client_id below are fixed and not configurable.
+    ibkr_host: str = Field(default="127.0.0.1")
     ibkr_trading_mode: str = Field(default="paper")  # "paper" | "live"
     ibkr_port_paper: int = Field(default=4004)
     ibkr_port_live: int = Field(default=4003)

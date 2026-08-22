@@ -1,57 +1,42 @@
 name: market-data-service
 
 services:
-  ib-gateway-market-data:
-    image: gnzsnz/ib-gateway:latest
-    container_name: ib-gateway-market-data
-    restart: unless-stopped
-    environment:
-      - TWS_USERID=${IB_USER}
-      - TWS_PASSWORD=${IB_PASSWORD}
-      - TRADING_MODE=paper
-    ports:
-      - "127.0.0.1:4004:4004"
-    healthcheck:
-      test: [      
-        "CMD-SHELL",
-        "bash -c '</dev/tcp/127.0.0.1/4004' >/dev/null 2>&1 || exit 1"
-      ]
-      interval: 30s
-      timeout: 5s
-      retries: 10
-      start_period: 120s
-    networks:
-      - market-data-net
-
   market-data:
     build:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
     container_name: market-data
-    depends_on:
-      ib-gateway-market-data:
-        condition: service_started
     environment:
       DATA_DIR: /var/lib/market-data
       POLYGON_API_KEY: ${POLYGON_API_KEY}
-      IBKR_HOST: ib-gateway-market-data
+
+      # IB Gateway runs inside this container, so the FastAPI app
+      # connects to it over the loopback. Paper trading is the only
+      # supported mode here.
+      IBKR_HOST: 127.0.0.1
       IBKR_TRADING_MODE: paper
-      IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-1}
+      IBKR_CLIENT_ID: 1
       IBKR_TIMEOUT_SECONDS: ${IBKR_TIMEOUT_SECONDS:-10}
-    # Bind to 0.0.0.0 so the API is reachable from outside the host
-    # (e.g. from another machine on the LAN). The in-container port (8001)
-    # must match the port uvicorn listens on inside the container.
+
+      # gnzsnz/ib-gateway env. IB_USER / IB_PASSWORD are the existing
+      # credentials from .env.
+      TWS_USERID: ${IB_USER}
+      TWS_PASSWORD: ${IB_PASSWORD}
+      TRADING_MODE: paper
+      TWS_ACCEPT_INCOMING: ${TWS_ACCEPT_INCOMING:-accept}
+      RELOGIN_AFTER_TWOFA_TIMEOUT: ${RELOGIN_AFTER_TWOFA_TIMEOUT:-yes}
+    # The FastAPI app listens on 8001 inside the container (matches
+    # the uvicorn command). IB Gateway's paper API is exposed on
+    # 127.0.0.1:4004 if you ever need to poke it from the host.
     ports:
       - "${APP_PORT:-3556}:8001"
+      - "127.0.0.1:4004:4004"
     volumes:
       - /home/marcuspeh/data/market-data:/var/lib/market-data
-    networks:
-      - market-data-net
-
-networks:
-  market-data-net:
-    driver: bridge
-
-volumes:
-  market_data_data:
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8001' >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 180s
