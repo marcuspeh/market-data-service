@@ -4,9 +4,13 @@ Historical bars (start..today-1) come from a parquet cache
 (``<data_dir>/market/<TICKER>/<YEAR>.parquet``) with on-miss Polygon
 backfill. Today's bar is served live by ``IBKRClient`` (5-minute
 in-process TTL) and never persisted — current-day bars update intraday.
+
+"Today" is the US/Eastern (Nasdaq) calendar date, not UTC. The US
+session has only just begun at 00:00 UTC, so reasoning in ET keeps the
+IBKR bar the source of truth for the live trading day.
 """
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from app.clients.ibkr import IBKRClient, IBKRError
@@ -41,14 +45,19 @@ class MarketDataService:
         if end < start:
             raise ValueError("'to' must be on or after 'from'")
 
-        today = datetime.now(timezone.utc).date()
+        # The live trading day is the Nasdaq calendar day, not UTC.
+        today = Settings.now_ny_date()
         historical_end = min(end, today - timedelta(days=1))
 
         bars: list[dict[str, Any]] = []
         backfilled_bars = 0
 
         if start <= historical_end:
+            # Only read bars strictly older than today, even if the
+            # caller asked for today..end — we don't want any cached
+            # intraday snapshot to compete with the live IBKR bar.
             cached = self._store.read_range(ticker, start, historical_end)
+            cached = [r for r in cached if r["date"] < today]
             cached_dates = {row["date"] for row in cached}
             missing = self._missing_dates(start, historical_end, cached_dates)
 
@@ -68,10 +77,18 @@ class MarketDataService:
                     logger.error(f"Polygon fetch failed for {ticker}: {e}")
                     raise
 
-                self._store.write_bars(ticker, polygon_bars)
-                backfilled_bars = len(polygon_bars)
+                # Only persist bars strictly older than today. Polygon
+                # can occasionally return today's intraday bar; we never
+                # want that in the historical parquet cache.
+                persistable = [
+                    b for b in polygon_bars if self._bar_date_ny(b) < today
+                ]
+                if persistable:
+                    self._store.write_bars(ticker, persistable)
+                backfilled_bars = len(persistable)
 
                 cached = self._store.read_range(ticker, start, historical_end)
+                cached = [r for r in cached if r["date"] < today]
 
             for row in cached:
                 bars.append({**row, "source": "cache"})
@@ -104,13 +121,13 @@ class MarketDataService:
     async def backfill_yesterday(self, ticker: str) -> int:
         """Fetch yesterday's daily bar from Polygon and persist it.
 
-        Called by the constituents scheduler after a successful refresh so
-        the previous trading day's "final" bar is cached exactly once.
+        Called by the constituents scheduler after a successful refresh
+        so the previous trading day's "final" bar is cached exactly once.
         Today is skipped — today's bar still updates intraday and stays
         live via IBKR.
         """
         ticker = ticker.upper()
-        today = datetime.now(timezone.utc).date()
+        today = Settings.now_ny_date()
         yesterday = today - timedelta(days=1)
         try:
             bars = await self._polygon.fetch_daily_bars(
@@ -139,10 +156,19 @@ class MarketDataService:
         return missing
 
     @staticmethod
+    def _bar_date_ny(bar: dict[str, Any]) -> date:
+        """Nasdaq calendar date for a Polygon-shaped bar."""
+        from app.config.settings import ny_from_ts
+
+        return ny_from_ts(int(bar["t"]))
+
+    @staticmethod
     def _normalize_ibkr_bar(bar: dict[str, Any], ticker: str) -> dict[str, Any]:
         """Reshape an IBKR bar dict to the same shape as cache / Polygon rows."""
+        from app.config.settings import ny_from_ts
+
         ts_ms = int(bar["t"])
-        bar_date = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).date()
+        bar_date = ny_from_ts(ts_ms)
         return {
             "ticker": ticker,
             "date": bar_date,

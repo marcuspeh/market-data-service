@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from app.clients.ibkr import IBKRError, IBKRClient, _BarCollector
+from app.config.settings import Settings
 from tests.conftest import FakeSettings
 
 
@@ -211,3 +212,41 @@ class TestErrorPropagation:
         # next call can retry.
         assert client._inflight == {}
         assert client._cache == {}
+
+
+class TestTodayNycTimezone:
+    """The IBKR in-process cache must key off the NY calendar date."""
+
+    def test_today_ny_matches_now_ny_date(self) -> None:
+        from app.clients.ibkr import IBKRClient
+
+        assert IBKRClient._today_ny() == Settings.now_ny_date()
+
+    def test_today_ny_is_not_utc_when_ny_and_utc_disagree(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """At a moment where ET and UTC fall on different calendar dates,
+        the cache key must follow ET (the trading day)."""
+        from datetime import datetime, timezone
+        from app.clients.ibkr import IBKRClient
+        from app.config.settings import NY_TZ, ny_now
+
+        # Pretend it's 2026-08-21 23:30 ET — UTC is already 2026-08-22.
+        fake_ny_now = datetime(2026, 8, 21, 23, 30, tzinfo=NY_TZ)
+
+        class _FakeDatetime:
+            @staticmethod
+            def now(tz=None):
+                if tz is None or tz == NY_TZ:
+                    return fake_ny_now
+                # Any other tz (e.g. UTC): convert the same instant.
+                return fake_ny_now.astimezone(tz)
+
+        # ``ny_now`` is what ``_today_ny`` actually delegates to, so
+        # patch ``datetime`` in the module that defines ``ny_now``.
+        monkeypatch.setattr(
+            "app.config.settings.datetime", _FakeDatetime
+        )
+        # Confirm both call sites agree.
+        assert ny_now() == fake_ny_now
+        assert IBKRClient._today_ny() == fake_ny_now.date()

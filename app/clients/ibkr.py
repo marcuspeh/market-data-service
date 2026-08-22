@@ -134,7 +134,7 @@ class IBKRClient:
         5 minutes). The cache key includes the calendar date so a stale
         ``yesterday`` bar cannot leak into ``today``.
         """
-        key = (ticker.upper(), self._today_utc())
+        key = (ticker.upper(), self._today_ny())
         now = time.monotonic()
 
         with self._lock:
@@ -186,8 +186,17 @@ class IBKRClient:
         return bars[-1] if bars else None
 
     @staticmethod
-    def _today_utc() -> date:
-        return datetime.now(timezone.utc).date()
+    def _today_ny() -> date:
+        """Today on the Nasdaq (US/Eastern) trading calendar.
+
+        IBKR's session and the parquet cache both reason in ET, so
+        the in-process bar cache must also key off the NY date. Using
+        UTC here would let a stale bar from the prior ET session
+        survive across the date line.
+        """
+        from app.config.settings import ny_now
+
+        return ny_now().date()
 
     async def _run_request(
         self,

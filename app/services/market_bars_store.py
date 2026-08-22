@@ -58,9 +58,14 @@ NULLABLE_COLUMNS = [VWAP_COL, TRADE_COUNT_COL]
 
 
 def _date_to_ts(d: date) -> int:
-    return int(
-        datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp() * 1000
-    )
+    """NY-midnight epoch-ms for ``d``.
+
+    Convenience wrapper around ``ny_midnight_ts`` so callers that
+    already import from this module don't need a second import.
+    """
+    from app.config.settings import ny_midnight_ts
+
+    return ny_midnight_ts(d)
 
 
 class MarketBarNotFoundError(KeyError):
@@ -148,7 +153,9 @@ class MarketBarsStore:
 
         ``bars`` may span multiple years; we partition by year and merge
         into each year's file (dropping any prior rows for the same
-        dates).
+        dates). The caller is responsible for ensuring only the right
+        bars reach this method (e.g. no intraday bars from a live
+        source).
         """
         if not bars:
             return
@@ -190,9 +197,15 @@ class MarketBarsStore:
 
 
 def _bar_to_row(bar: dict[str, Any], ticker: str) -> dict[str, Any]:
-    """Build a parquet row from upstream shape (t=ms, o/h/l/c, v)."""
+    """Build a parquet row from upstream shape (t=ms, o/h/l/c, v).
+
+    The parquet ``date`` column is the Nasdaq (US/Eastern) trading
+    date of the bar; ``ts_ms`` is UTC midnight ms (Polygon's format).
+    """
+    from app.config.settings import ny_from_ts
+
     ts_ms = int(bar["t"])
-    bar_date = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).date()
+    bar_date = ny_from_ts(ts_ms)
     return {
         DATE_COL: bar_date,
         DATE_COL + "_year": bar_date.year,

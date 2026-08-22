@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from app.config.settings import NY_TZ
 from app.services.market_bars_store import MarketBarsStore
 
 
@@ -22,6 +23,20 @@ def _bar(timestamp: int) -> dict:
         "vw": 100.2,
         "n": 10,
     }
+
+
+def _ts_for_ny(d: date) -> int:
+    """Epoch-ms for an NY-midnight timestamp on ``d``.
+
+    Used so that the bar's stored ``date`` column is exactly ``d`` in
+    the parquet (which now reasons in ET).
+    """
+    return int(
+        datetime(d.year, d.month, d.day, tzinfo=NY_TZ)
+        .astimezone(timezone.utc)
+        .timestamp()
+        * 1000
+    )
 
 
 @pytest.fixture
@@ -39,12 +54,9 @@ class TestLayout:
         assert store.list_years("AAPL") == []
 
     def test_list_years_after_write(self, store: MarketBarsStore):
-        ts = lambda d: int(
-            datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp() * 1000
-        )
-        store.write_bars("AAPL", [_bar(ts(date(2024, 6, 1)))])
-        store.write_bars("AAPL", [_bar(ts(date(2025, 6, 1)))])
-        store.write_bars("MSFT", [_bar(ts(date(2024, 6, 1)))])
+        store.write_bars("AAPL", [_bar(_ts_for_ny(date(2024, 6, 1)))])
+        store.write_bars("AAPL", [_bar(_ts_for_ny(date(2025, 6, 1)))])
+        store.write_bars("MSFT", [_bar(_ts_for_ny(date(2024, 6, 1)))])
         assert store.list_years("AAPL") == [2024, 2025]
         assert store.list_years("MSFT") == [2024]
         assert store.list_years("QQQ") == []
@@ -52,10 +64,7 @@ class TestLayout:
 
 class TestWriteRead:
     def test_round_trip_single_bar(self, store: MarketBarsStore):
-        ts = int(
-            datetime(2024, 6, 1, tzinfo=timezone.utc).timestamp() * 1000
-        )
-        store.write_bars("AAPL", [_bar(ts)])
+        store.write_bars("AAPL", [_bar(_ts_for_ny(date(2024, 6, 1)))])
         result = store.read_range("AAPL", date(2024, 6, 1), date(2024, 6, 1))
         assert len(result) == 1
         assert result[0]["ticker"] == "AAPL"
@@ -64,8 +73,7 @@ class TestWriteRead:
     def test_year_partitioning(self, store: MarketBarsStore):
         rows = []
         for y in (2023, 2024, 2025):
-            ts = int(datetime(y, 6, 1, tzinfo=timezone.utc).timestamp() * 1000)
-            rows.append(_bar(ts))
+            rows.append(_bar(_ts_for_ny(date(y, 6, 1))))
         store.write_bars("AAPL", rows)
 
         # 3 yearly files exist.
@@ -78,9 +86,9 @@ class TestWriteRead:
     def test_rows_are_sorted_by_date_within_a_file(self, store: MarketBarsStore):
         # Write the same year's bars out of order.
         rows = [
-            _bar(int(datetime(2024, 6, 3, tzinfo=timezone.utc).timestamp() * 1000)),
-            _bar(int(datetime(2024, 6, 1, tzinfo=timezone.utc).timestamp() * 1000)),
-            _bar(int(datetime(2024, 6, 2, tzinfo=timezone.utc).timestamp() * 1000)),
+            _bar(_ts_for_ny(date(2024, 6, 3))),
+            _bar(_ts_for_ny(date(2024, 6, 1))),
+            _bar(_ts_for_ny(date(2024, 6, 2))),
         ]
         store.write_bars("AAPL", rows)
 
@@ -89,21 +97,26 @@ class TestWriteRead:
         assert days == sorted(days)
 
     def test_rewrite_same_date_replaces_old_row(self, store: MarketBarsStore):
-        ts1 = int(datetime(2024, 6, 1, tzinfo=timezone.utc).timestamp() * 1000)
-        ts2 = int(datetime(2024, 6, 1, tzinfo=timezone.utc).timestamp() * 1000) + 1000
+        ts1 = _ts_for_ny(date(2024, 6, 1))
+        ts2 = ts1 + 1000
         # First write — one bar at price 100
-        store.write_bars("AAPL", [{**{"t": ts1, "o": 100.0, "h": 101.0, "l": 99.0,
-                                       "c": 100.5, "v": 1000.0, "vw": 100.2, "n": 10}}])
+        store.write_bars(
+            "AAPL",
+            [{"t": ts1, "o": 100.0, "h": 101.0, "l": 99.0, "c": 100.5,
+              "v": 1000.0, "vw": 100.2, "n": 10}],
+        )
         # Second write — different close for the same date
-        store.write_bars("AAPL", [{**{"t": ts2, "o": 200.0, "h": 201.0, "l": 199.0,
-                                       "c": 200.5, "v": 2000.0, "vw": 200.2, "n": 20}}])
+        store.write_bars(
+            "AAPL",
+            [{"t": ts2, "o": 200.0, "h": 201.0, "l": 199.0, "c": 200.5,
+              "v": 2000.0, "vw": 200.2, "n": 20}],
+        )
         result = store.read_range("AAPL", date(2024, 6, 1), date(2024, 6, 1))
         assert len(result) == 1
         assert result[0]["close"] == 200.5
 
     def test_out_of_range_read_filtered(self, store: MarketBarsStore):
-        ts = int(datetime(2024, 6, 1, tzinfo=timezone.utc).timestamp() * 1000)
-        store.write_bars("AAPL", [_bar(ts)])
+        store.write_bars("AAPL", [_bar(_ts_for_ny(date(2024, 6, 1)))])
 
         # Read before the date → empty
         assert store.read_range("AAPL", date(2024, 1, 1), date(2024, 1, 5)) == []
@@ -117,8 +130,7 @@ class TestReadRangeAcrossYears:
         rows = []
         for y in (2023, 2024, 2025):
             for m in (1, 6, 12):
-                ts = int(datetime(y, m, 1, tzinfo=timezone.utc).timestamp() * 1000)
-                rows.append(_bar(ts))
+                rows.append(_bar(_ts_for_ny(date(y, m, 1))))
         store.write_bars("AAPL", rows)
 
         # Window only in 2024.
@@ -131,9 +143,24 @@ class TestReadRangeAcrossYears:
 
     def test_missing_years_contribute_nothing(self, store: MarketBarsStore):
         # Only 2024 is written.
-        ts = int(datetime(2024, 6, 1, tzinfo=timezone.utc).timestamp() * 1000)
-        store.write_bars("AAPL", [_bar(ts)])
+        store.write_bars("AAPL", [_bar(_ts_for_ny(date(2024, 6, 1)))])
 
         # 2023 and 2025 files don't exist — no error, no rows.
         result = store.read_range("AAPL", date(2023, 1, 1), date(2025, 12, 31))
         assert len(result) == 1
+
+
+class TestTimezoneSemantics:
+    def test_bar_at_utc_midnight_stored_under_prior_ny_date(self, store: MarketBarsStore):
+        """A bar whose UTC timestamp is 2026-08-22 00:30 (i.e. 2026-08-21
+        20:30 ET) must be stored under the NY trading date of 2026-08-21,
+        not the UTC date. Otherwise early-morning Polygon fetches would
+        be misattributed to the wrong session.
+        """
+        # NY 2026-08-21 23:30 is UTC 2026-08-22 03:30.
+        ts = _ts_for_ny(date(2026, 8, 21))
+        store.write_bars("AAPL", [_bar(ts)])
+
+        result = store.read_range("AAPL", date(2026, 8, 21), date(2026, 8, 21))
+        assert len(result) == 1
+        assert result[0]["date"] == date(2026, 8, 21)
