@@ -22,7 +22,7 @@ from ibapi.client import EClient
 from ibapi.contract import Contract
 from ibapi.wrapper import EWrapper
 
-from app.config.settings import Settings
+from app.config.settings import NY_TZ, Settings
 
 logger = logging.getLogger(__name__)
 
@@ -91,11 +91,23 @@ class _BarCollector(EWrapper):
     @staticmethod
     def _parse_bar_timestamp_ms(raw: str) -> int:
         """ibapi returns daily bar timestamps as ``"YYYYMMDD"``. Convert to
-        epoch milliseconds (UTC midnight)."""
+        epoch milliseconds of NY-midnight UTC.
+
+        IBKR's date is the Nasdaq trading session, i.e. US/Eastern. The
+        parquet cache stores each bar's ``timestamp`` as NY-midnight in
+        UTC (see :func:`ny_midnight_ts`); converting through ``NY_TZ``
+        before shifting to UTC keeps cache and IBKR bars on the same
+        axis so a final sort by ``timestamp`` preserves the trading-day
+        ordering.
+        """
         raw = raw.strip()
         for fmt in ("%Y%m%d %H:%M:%S", "%Y%m%d"):
             try:
-                dt = datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
+                dt_naive = datetime.strptime(raw, fmt)
+                if NY_TZ is None:
+                    dt = dt_naive.replace(tzinfo=timezone.utc)
+                else:
+                    dt = dt_naive.replace(tzinfo=NY_TZ).astimezone(timezone.utc)
                 return int(dt.timestamp() * 1000)
             except ValueError:
                 continue

@@ -22,14 +22,17 @@ USER root
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    UV_PYTHON=python3.12
+    UV_PYTHON=python3.12 \
+    TZ=America/New_York
 
 RUN apt-get update -y \
  && apt-get install --no-install-recommends --yes \
         python3.12 python3.12-venv python3.12-dev \
-        build-essential ca-certificates curl \
+        build-essential ca-certificates curl tzdata \
  && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
  && ln -sf /usr/bin/python3.12 /usr/bin/python \
+ && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+ && echo $TZ > /etc/timezone \
  && curl -sSfL https://github.com/astral-sh/uv/releases/download/0.5.11/uv-installer.sh \
     | env UV_UNMANAGED_INSTALL=/usr/local/bin sh \
  && apt-get clean \
