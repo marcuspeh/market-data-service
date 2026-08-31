@@ -26,6 +26,9 @@ services:
       TRADING_MODE: paper
       TWS_ACCEPT_INCOMING: ${TWS_ACCEPT_INCOMING:-accept}
       RELOGIN_AFTER_TWOFA_TIMEOUT: ${RELOGIN_AFTER_TWOFA_TIMEOUT:-yes}
+      TIME_ZONE: America/New_York
+      TZ: America/New_York
+      AUTO_RESTART_TIME: "04:00 AM"
     # The FastAPI app listens on 8001 inside the container (matches
     # the uvicorn command). IB Gateway's paper API is exposed on
     # 127.0.0.1:4004 if you ever need to poke it from the host.
