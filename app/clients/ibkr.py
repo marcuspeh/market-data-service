@@ -237,6 +237,7 @@ class IBKRClient:
         def _connect_and_run():
             try:
                 client.connect(host, port, clientId=client_id)
+                client.reqMarketDataType(1)
                 client.reqHistoricalData(
                     reqId=1,
                     contract=contract,
