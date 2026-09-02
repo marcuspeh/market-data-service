@@ -20,7 +20,7 @@ A small FastAPI service that:
 │   │   ├── constituents.py
 │   │   └── market_data.py
 │   ├── clients/                   # External API clients
-│   │   ├── longbridge.py          # Longbridge OpenAPI wrapper (async + 5-min TTL)
+│   │   ├── longbridge.py          # Longbridge OpenAPI wrapper (async + 30s TTL)
 │   │   └── polygon.py
 │   ├── config/
 │   │   └── settings.py            # Settings + NY timezone helpers
@@ -109,6 +109,7 @@ All settings come from environment variables (or a `.env` file via
 | `LONGBRIDGE_ACCESS_TOKEN` | _empty_ | Longbridge OpenAPI legacy access token |
 | `LONGBRIDGE_TIMEOUT_SECONDS` | `10` | Request timeout for the Longbridge client |
 | `LONGBRIDGE_REGION` | _(auto)_ | `hk` or `cn` if the SDK picks the wrong endpoint |
+| `LONGBRIDGE_REGION_SUFFIX` | `.US` | Suffix appended to bare tickers (e.g. `AAPL` → `AAPL.US`) |
 | `APP_PORT` | `3556` | Host port the FastAPI app listens on |
 
 All date / time-of-day logic is anchored on **America/New_York**
@@ -168,21 +169,9 @@ curl 'http://localhost:3556/constituents?etf=SPY&date=2026-08-12'
 }
 ```
 
-### `POST /admin/constituents/refresh`
-
-Ad-hoc refresh. By default refreshes every supported ETF for today's
-date (US Eastern). Optional `etf` query param restricts to a single
-ticker; optional `date` overrides the snapshot date.
-
-```bash
-curl -X POST 'http://localhost:3556/admin/constituents/refresh?etf=SPY'
-# {"date": "2026-08-12", "SPY": 505}
-```
-
-```bash
-curl -X POST 'http://localhost:3556/admin/constituents/refresh'
-# {"date": "2026-08-12", "results": {"SPY": 505, "QQQ": 106, "IWM": 1969}}
-```
+Constituents snapshots are refreshed on a schedule by the in-process
+job in [`app/services/constituents_scheduler.py`](app/services/constituents_scheduler.py)
+(daily 8:30 AM America/New_York); there is no public refresh endpoint.
 
 ### `GET /market-data/{ticker}?from={YYYY-MM-DD}&to={YYYY-MM-DD}`
 

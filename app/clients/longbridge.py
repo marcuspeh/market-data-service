@@ -42,7 +42,13 @@ class LongbridgeClient:
 
     def _ensure_ctx(self) -> Any:
         if self._ctx is None:
-            self._ctx = QuoteContext(Config.from_apikey_env())
+            self._ctx = QuoteContext(
+                Config.from_apikey(
+                    self._settings.longbridge_app_key,
+                    self._settings.longbridge_app_secret,
+                    self._settings.longbridge_access_token,
+                )
+            )
         return self._ctx
 
     async def fetch_today_bar(self, ticker: str) -> dict[str, Any] | None:
@@ -123,7 +129,7 @@ class LongbridgeClient:
             "l": float(last.low),
             "c": float(last.close),
             "v": float(last.volume or 0),
-            "vw": float(last.turnover) if last.turnover is not None else None,
+            "vw": None,  # Longbridge daily bars don't expose per-share VWAP
             "n": None,  # Longbridge daily bars don't expose trade count
         }
 

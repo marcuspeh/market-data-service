@@ -42,6 +42,10 @@ class FakeSettings:
 
     polygon_api_key: str = "test-key"
     polygon_base_url: str = "https://api.polygon.io"
+    app_port: int = 3556
+    longbridge_app_key: str = "test-app-key"
+    longbridge_app_secret: str = "test-app-secret"
+    longbridge_access_token: str = "test-access-token"
     longbridge_timeout_seconds: float = 5.0
     longbridge_region_suffix: str = ".US"
 

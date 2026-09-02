@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -35,6 +35,37 @@ def _make_client(
     client = LongbridgeClient(settings, cache_ttl_seconds=ttl)
     client._ctx = MagicMock()
     return client
+
+
+class TestCredentials:
+    def test_ensure_ctx_passes_settings_credentials_to_config(
+        self, fake_settings: FakeSettings
+    ):
+        client = LongbridgeClient(fake_settings)
+        client._ctx = None  # force lazy construction
+        with patch("app.clients.longbridge.Config") as config_cls:
+            config_cls.from_apikey.return_value = MagicMock()
+            with patch("app.clients.longbridge.QuoteContext") as qc:
+                ctx = client._ensure_ctx()
+        config_cls.from_apikey.assert_called_once_with(
+            fake_settings.longbridge_app_key,
+            fake_settings.longbridge_app_secret,
+            fake_settings.longbridge_access_token,
+        )
+        qc.assert_called_once_with(config_cls.from_apikey.return_value)
+        assert ctx is qc.return_value
+
+    def test_ensure_ctx_is_cached(self, fake_settings: FakeSettings):
+        client = LongbridgeClient(fake_settings)
+        client._ctx = None
+        with patch("app.clients.longbridge.Config") as config_cls:
+            config_cls.from_apikey.return_value = MagicMock()
+            with patch("app.clients.longbridge.QuoteContext") as qc:
+                first = client._ensure_ctx()
+                second = client._ensure_ctx()
+        assert first is second
+        assert config_cls.from_apikey.call_count == 1
+        assert qc.call_count == 1
 
 
 class TestUncachedPath:
@@ -243,6 +274,37 @@ class TestUncachedRequestShape:
         client = _make_client(fake_settings)
         client._ctx.history_candlesticks_by_offset.return_value = []
         assert await client._fetch_today_bar_uncached("AAPL") is None
+
+    async def test_live_bar_drops_turnover_from_vwap_field(
+        self, fake_settings: FakeSettings
+    ):
+        """Longbridge's turnover is total notional, not per-share VWAP.
+
+        The bar dict must surface volume as shares and leave vwap/trade_count
+        as None so the cache-shape normalisation doesn't leak turnover into
+        the vwap field.
+        """
+        from datetime import datetime, timezone
+
+        client = _make_client(fake_settings)
+        candle = MagicMock(
+            open=1.0,
+            high=2.0,
+            low=0.5,
+            close=1.5,
+            volume=18_306_516,
+            turnover=5_954_824_475.316,
+        )
+        candle.timestamp = datetime(2026, 9, 2, tzinfo=timezone.utc)
+
+        client._ctx.history_candlesticks_by_offset.return_value = [candle]
+
+        result = await client._fetch_today_bar_uncached("AAPL")
+
+        assert result is not None
+        assert result["v"] == 18_306_516.0
+        assert result["vw"] is None
+        assert result["n"] is None
 
 
 class TestTodayNycTimezone:

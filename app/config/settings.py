@@ -29,7 +29,13 @@ class Settings(BaseSettings):
     polygon_api_key: str = Field(default="")
     polygon_base_url: str = Field(default="https://api.polygon.io")
 
-    # Longbridge OpenAPI: credentials loaded via LONGBRIDGE_APP_KEY/SECRET/ACCESS_TOKEN.
+    # Host port for the FastAPI app when run via docker-compose.
+    app_port: int = Field(default=3556)
+
+    # Longbridge OpenAPI (API Key auth). Credentials from open.longbridge.com.
+    longbridge_app_key: str = Field(default="")
+    longbridge_app_secret: str = Field(default="")
+    longbridge_access_token: str = Field(default="")
     longbridge_timeout_seconds: float = Field(default=10.0)
     longbridge_region_suffix: str = Field(default=".US")
 
