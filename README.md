@@ -35,7 +35,6 @@ A small FastAPI service that:
 │   └── main.py                    # FastAPI app + lifespan
 ├── Dockerfile                     # Single-service image (app only)
 ├── docker-compose.yml             # One service: market-data
-├── docker-entrypoint.sh           # uvicorn exec
 ├── .dockerignore
 ├── pyproject.toml                 # uv-managed dependencies
 └── uv.lock
@@ -75,8 +74,9 @@ needed if the SDK's auto-pick is wrong for your location.
 
 ### Option B — Docker Compose (recommended)
 
-Single container: the Python app on top of Ubuntu 24.04 with the
-Longbridge SDK installed. ``docker-entrypoint.sh`` just execs uvicorn.
+Single container: `python:3.12-slim` with the Longbridge SDK
+installed and the app layered on top; uvicorn runs as a non-root
+user.
 
 ```bash
 # 1. Fill in the Longbridge + Polygon credentials

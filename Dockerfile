@@ -2,60 +2,46 @@
 #
 # Unified image for market-data-service.
 #
-# Plain Ubuntu 24.04 base with Python 3.12 + uv + the app on top.
-# The app no longer talks to IB Gateway — today's bar comes from
-# Longbridge's HTTP / WebSocket endpoints over the public internet.
+# Single-stage image on python:3.12-slim so we get Python pre-installed
+# and no UID-1000 collision with a pre-existing ubuntu user. The app
+# talks to Longbridge's HTTP / WebSocket endpoints over the public
+# internet; no other services are bundled.
 
-FROM ubuntu:24.04 AS base
+FROM python:3.12-slim
 
-USER root
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONDONTWRITEBYTECODE=1 \
+ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    UV_PYTHON=python3.12 \
+    UV_SYSTEM_PYTHON=1 \
     TZ=America/New_York
 
-RUN apt-get update -y \
- && apt-get install --no-install-recommends --yes \
-        python3.12 python3.12-venv python3.12-dev \
-        build-essential ca-certificates curl tzdata \
- && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
- && ln -sf /usr/bin/python3.12 /usr/bin/python \
- && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
- && echo $TZ > /etc/timezone \
- && curl -sSfL https://github.com/astral-sh/uv/releases/download/0.5.11/uv-installer.sh \
-    | env UV_UNMANAGED_INSTALL=/usr/local/bin sh \
- && apt-get clean \
- && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
 
-RUN useradd --create-home --uid 1000 --gid 1000 appuser
-USER 1000:1000
-WORKDIR /home/appuser/app
+# curl is used by the compose healthcheck.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl tzdata \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone \
+    && rm -rf /var/lib/apt/lists/*
 
-ENV PATH="/home/appuser/app/.venv/bin:${PATH}" \
-    UV_LINK_MODE=copy \
-    UV_COMPILE_BYTECODE=1 \
-    UV_PROJECT_ENVIRONMENT=/home/appuser/app/.venv \
-    PYTHONPATH=/home/appuser/app
+# Install uv for fast Python package management.
+RUN pip install --no-cache-dir uv
 
-# ---------- builder ----------
-FROM base AS builder
+# Install Python deps first for layer caching.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen
 
-COPY --chown=1000:1000 pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-install-project
+# Copy only this service's source tree.
+COPY . /app/
 
-COPY --chown=1000:1000 . /home/appuser/app
-RUN uv sync --frozen --no-dev
-
-# ---------- runtime ----------
-FROM base AS runtime
-
-COPY --chown=1000:1000 --from=builder /home/appuser/app /home/appuser/app
+# Drop privileges — match config_store's pattern (no explicit UID; let
+# the image assign one). Slim images don't pre-create a UID 1000 user.
+RUN useradd --create-home --shell /bin/bash app \
+    && chown -R app:app /app
+USER app
 
 # In-container port matches docker-compose.yml's APP_PORT mapping.
 EXPOSE 8001
 
 ENV PORT_API=8001
 
-ENTRYPOINT ["/home/appuser/app/docker-entrypoint.sh"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
