@@ -25,11 +25,14 @@ whose date matches the new bars, concatenate the new bars, sort by
 date ascending, and write back atomically via a temp-file rename.
 """
 import logging
+import math
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+from app.config.settings import ny_from_ts, ny_midnight_ts
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +61,7 @@ NULLABLE_COLUMNS = [VWAP_COL, TRADE_COUNT_COL]
 
 
 def _date_to_ts(d: date) -> int:
-    """NY-midnight epoch-ms for ``d``.
-
-    Convenience wrapper around ``ny_midnight_ts`` so callers that
-    already import from this module don't need a second import.
-    """
-    from app.config.settings import ny_midnight_ts
-
+    """NY-midnight epoch-ms for ``d``."""
     return ny_midnight_ts(d)
 
 
@@ -202,8 +199,6 @@ def _bar_to_row(bar: dict[str, Any], ticker: str) -> dict[str, Any]:
     The parquet ``date`` column is the Nasdaq (US/Eastern) trading
     date of the bar; ``ts_ms`` is UTC midnight ms (Polygon's format).
     """
-    from app.config.settings import ny_from_ts
-
     ts_ms = int(bar["t"])
     bar_date = ny_from_ts(ts_ms)
     return {
@@ -232,9 +227,4 @@ def _normalise_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _is_nan(v: Any) -> bool:
-    try:
-        import math
-
-        return isinstance(v, float) and math.isnan(v)
-    except TypeError:
-        return False
+    return isinstance(v, float) and math.isnan(v)

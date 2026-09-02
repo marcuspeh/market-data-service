@@ -1,10 +1,4 @@
-"""Tests for the pydantic-settings configuration.
-
-Each test instantiates Settings with ``_env_file=None`` so the local
-``.env`` (if present) is ignored — keeps tests hermetic regardless of
-the developer's shell environment.
-"""
-
+"""Tests for the pydantic-settings configuration."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -18,18 +12,19 @@ def _settings(**overrides) -> Settings:
     return Settings(_env_file=None, **overrides)
 
 
-class TestIbkrPortResolution:
-    def test_paper_trading_mode_returns_paper_port(self):
-        s = _settings(ibkr_trading_mode="paper", ibkr_port_paper=4004)
-        assert s.ibkr_port == 4004
+class TestLongbridgeSettings:
+    def test_default_timeout(self):
+        s = _settings()
+        assert s.longbridge_timeout_seconds == 10.0
 
-    def test_live_trading_mode_returns_live_port(self):
-        s = _settings(ibkr_trading_mode="live", ibkr_port_live=4003)
-        assert s.ibkr_port == 4003
+    def test_default_region_suffix(self):
+        s = _settings()
+        assert s.longbridge_region_suffix == ".US"
 
-    def test_unknown_mode_defaults_to_paper(self):
-        s = _settings(ibkr_trading_mode="weird")
-        assert s.ibkr_port == 4004
+    def test_overrides_take_effect(self):
+        s = _settings(longbridge_timeout_seconds=2.5, longbridge_region_suffix=".HK")
+        assert s.longbridge_timeout_seconds == 2.5
+        assert s.longbridge_region_suffix == ".HK"
 
 
 class TestDataDir:
@@ -46,4 +41,4 @@ class TestEnvOverrides:
     def test_explicit_kwargs_override_defaults(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("POLYGON_API_KEY", "envkey")
         s = _settings()
-        assert s.polygon_api_key == "envkey"  # env wins when env_file disabled
+        assert s.polygon_api_key == "envkey"

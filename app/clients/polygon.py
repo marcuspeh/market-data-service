@@ -26,12 +26,7 @@ class PolygonClient:
         start: date,
         end: date,
     ) -> list[dict[str, Any]]:
-        """Fetch daily bars from Polygon for the given ticker/date range.
-
-        Polygon's aggregates endpoint supports any (multiplier, timespan) but
-        this client only uses it for historical daily bars — today's bar
-        comes from IBKR via ``IBKRClient``.
-        """
+        """Fetch historical daily bars from Polygon; today's bar comes from Longbridge."""
         if not self._settings.polygon_api_key:
             raise PolygonError("POLYGON_API_KEY is not configured")
 

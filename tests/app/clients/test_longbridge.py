@@ -1,15 +1,15 @@
-"""Tests for the IBKRClient TTL cache + single-flight behaviour."""
-
+"""Tests for the LongbridgeClient TTL cache + single-flight behaviour."""
 from __future__ import annotations
 
 import asyncio
-import time
+from datetime import datetime, timezone
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
-from app.clients.ibkr import IBKRError, IBKRClient, _BarCollector
-from app.config.settings import Settings
+from app.clients.longbridge import LongbridgeClient, LongbridgeError
+from app.config.settings import NY_TZ, Settings, ny_now
 from tests.conftest import FakeSettings
 
 
@@ -26,17 +26,22 @@ def _bar(timestamp: int = 1) -> dict[str, Any]:
     }
 
 
-def _make_client(settings: FakeSettings, *, ttl: float = 60.0) -> IBKRClient:
-    return IBKRClient(settings, cache_ttl_seconds=ttl)
+def _make_client(
+    settings: FakeSettings,
+    *,
+    ttl: float = 60.0,
+) -> LongbridgeClient:
+    """Build a client with a MagicMocked QuoteContext."""
+    client = LongbridgeClient(settings, cache_ttl_seconds=ttl)
+    client._ctx = MagicMock()
+    return client
 
 
 class TestUncachedPath:
-    """Directly exercise the no-cache code path."""
-
     async def test_returns_last_bar(self, fake_settings: FakeSettings):
         client = _make_client(fake_settings)
 
-        async def fake_run(self: IBKRClient, ticker: str) -> dict[str, Any]:
+        async def fake_run(self: LongbridgeClient, ticker: str) -> dict[str, Any]:
             return _bar(timestamp=123)
 
         client._fetch_today_bar_uncached = fake_run.__get__(client)  # type: ignore[method-assign]
@@ -52,7 +57,7 @@ class TestTtlCache:
 
         call_count = 0
 
-        async def fake_run(self: IBKRClient, ticker: str) -> dict[str, Any]:
+        async def fake_run(self: LongbridgeClient, ticker: str) -> dict[str, Any]:
             nonlocal call_count
             call_count += 1
             return _bar(timestamp=call_count)
@@ -66,12 +71,11 @@ class TestTtlCache:
         assert call_count == 1
 
     async def test_cache_expires_after_ttl(self, fake_settings: FakeSettings):
-        # Use a fake clock so the test runs in milliseconds, not 5 minutes.
         client = _make_client(fake_settings, ttl=0.05)
 
         call_count = 0
 
-        async def fake_run(self: IBKRClient, ticker: str) -> dict[str, Any]:
+        async def fake_run(self: LongbridgeClient, ticker: str) -> dict[str, Any]:
             nonlocal call_count
             call_count += 1
             return _bar(timestamp=call_count)
@@ -90,7 +94,7 @@ class TestTtlCache:
         client = _make_client(fake_settings, ttl=60.0)
         call_count = 0
 
-        async def fake_run(self: IBKRClient, ticker: str) -> dict[str, Any]:
+        async def fake_run(self: LongbridgeClient, ticker: str) -> dict[str, Any]:
             nonlocal call_count
             call_count += 1
             return _bar(timestamp=call_count)
@@ -105,12 +109,11 @@ class TestTtlCache:
     async def test_cached_none_value_is_respected(
         self, fake_settings: FakeSettings
     ):
-        """If the underlying call returned None (no bar yet today), that
-        ``None`` is still cached so we don't hammer IBKR."""
+        """A None result is cached so we don't hammer Longbridge."""
         client = _make_client(fake_settings, ttl=60.0)
         call_count = 0
 
-        async def fake_run(self: IBKRClient, ticker: str) -> Any:
+        async def fake_run(self: LongbridgeClient, ticker: str) -> Any:
             nonlocal call_count
             call_count += 1
             return None
@@ -134,13 +137,11 @@ class TestSingleFlight:
         max_active = 0
         call_count = 0
 
-        async def fake_run(self: IBKRClient, ticker: str) -> dict[str, Any]:
+        async def fake_run(self: LongbridgeClient, ticker: str) -> dict[str, Any]:
             nonlocal active, max_active, call_count
             active += 1
             max_active = max(max_active, active)
             try:
-                # Yield enough that all coroutines have time to enter
-                # the single-flight branch.
                 await asyncio.sleep(0.05)
                 call_count += 1
                 return _bar(timestamp=call_count)
@@ -160,78 +161,100 @@ class TestSingleFlight:
         assert max_active == 1, "single-flight should serialize concurrent requests"
 
 
-class TestIBKRErrorHandling:
-    @pytest.mark.parametrize(
-        ("code", "message"),
-        [
-            (2104, "Market data farm connection is OK:hfarm"),
-            (2106, "HMDS data farm connection is OK:apachmds"),
-            (2107, "Historical data farm connection has become inactive"),
-            (2108, "Market data farm connection has become inactive"),
-            (2158, "Sec-def data farm connection is OK"),
-        ],
-    )
-    def test_informational_status_is_not_fatal(self, code, message):
-        loop = asyncio.new_event_loop()
-        future = loop.create_future()
-        collector = _BarCollector(loop, future)
-
-        try:
-            collector.error(1, code, message)
-            assert not future.done()
-        finally:
-            loop.close()
-
-    def test_other_market_data_error_is_fatal(self):
-        loop = asyncio.new_event_loop()
-        future = loop.create_future()
-        collector = _BarCollector(loop, future)
-
-        try:
-            collector.error(1, 2105, "Historical data farm connection is broken")
-            with pytest.raises(IBKRError, match="IBKR error 2105"):
-                loop.run_until_complete(future)
-        finally:
-            loop.close()
-
-
 class TestErrorPropagation:
     async def test_error_is_raised_to_all_waiters(self, fake_settings: FakeSettings):
         client = _make_client(fake_settings, ttl=60.0)
 
-        async def fake_run(self: IBKRClient, ticker: str) -> dict[str, Any]:
+        async def fake_run(self: LongbridgeClient, ticker: str) -> dict[str, Any]:
             await asyncio.sleep(0.01)
-            raise IBKRError("boom")
+            raise LongbridgeError("boom")
 
         client._fetch_today_bar_uncached = fake_run.__get__(client)  # type: ignore[method-assign]
 
-        with pytest.raises(IBKRError, match="boom"):
+        with pytest.raises(LongbridgeError, match="boom"):
             await client.fetch_today_bar("AAPL")
 
-        # After a failed call, the inflight slot must be cleared so the
-        # next call can retry.
+        # Inflight slot must clear so the next call can retry.
         assert client._inflight == {}
         assert client._cache == {}
 
+    async def test_sdk_exception_is_wrapped_in_longbridge_error(
+        self, fake_settings: FakeSettings
+    ):
+        client = _make_client(fake_settings, ttl=60.0)
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("transport down")
+
+        client._ctx.history_candlesticks_by_offset.side_effect = boom
+
+        with pytest.raises(LongbridgeError, match="transport down"):
+            await client._fetch_today_bar_uncached("AAPL")
+
+    async def test_timeout_is_wrapped_in_longbridge_error(
+        self, fake_settings: FakeSettings, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Force wait_for to raise TimeoutError; SDK side is short-circuited.
+        client = _make_client(fake_settings, ttl=60.0)
+
+        async def fake_wait_for(awaitable, timeout):  # noqa: ARG001
+            try:
+                await awaitable
+            except Exception:
+                pass
+            raise asyncio.TimeoutError()
+
+        monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+
+        with pytest.raises(LongbridgeError, match="timed out"):
+            await client._fetch_today_bar_uncached("AAPL")
+
+
+class TestUncachedRequestShape:
+    async def test_uses_us_region_suffix_by_default(
+        self, fake_settings: FakeSettings
+    ):
+        client = _make_client(fake_settings)
+        candle = MagicMock(open=1, high=2, low=0.5, close=1.5, volume=10, turnover=15)
+        candle.timestamp = datetime(2026, 8, 21, tzinfo=timezone.utc)
+
+        client._ctx.history_candlesticks_by_offset.return_value = [candle]
+
+        await client._fetch_today_bar_uncached("AAPL")
+
+        call = client._ctx.history_candlesticks_by_offset.call_args
+        assert call.args[0] == "AAPL.US"
+
+    async def test_already_suffixed_symbol_passes_through(
+        self, fake_settings: FakeSettings
+    ):
+        client = _make_client(fake_settings)
+        candle = MagicMock(open=1, high=2, low=0.5, close=1.5, volume=10, turnover=15)
+        candle.timestamp = datetime(2026, 8, 21, tzinfo=timezone.utc)
+
+        client._ctx.history_candlesticks_by_offset.return_value = [candle]
+
+        await client._fetch_today_bar_uncached("700.HK")
+
+        call = client._ctx.history_candlesticks_by_offset.call_args
+        assert call.args[0] == "700.HK"
+
+    async def test_no_candles_returns_none(self, fake_settings: FakeSettings):
+        client = _make_client(fake_settings)
+        client._ctx.history_candlesticks_by_offset.return_value = []
+        assert await client._fetch_today_bar_uncached("AAPL") is None
+
 
 class TestTodayNycTimezone:
-    """The IBKR in-process cache must key off the NY calendar date."""
+    """Cache must key off the NY calendar date."""
 
     def test_today_ny_matches_now_ny_date(self) -> None:
-        from app.clients.ibkr import IBKRClient
-
-        assert IBKRClient._today_ny() == Settings.now_ny_date()
+        assert LongbridgeClient._today_ny() == Settings.now_ny_date()
 
     def test_today_ny_is_not_utc_when_ny_and_utc_disagree(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """At a moment where ET and UTC fall on different calendar dates,
-        the cache key must follow ET (the trading day)."""
-        from datetime import datetime, timezone
-        from app.clients.ibkr import IBKRClient
-        from app.config.settings import NY_TZ, ny_now
-
-        # Pretend it's 2026-08-21 23:30 ET — UTC is already 2026-08-22.
+        """When ET and UTC fall on different calendar dates, ET wins."""
         fake_ny_now = datetime(2026, 8, 21, 23, 30, tzinfo=NY_TZ)
 
         class _FakeDatetime:
@@ -239,14 +262,8 @@ class TestTodayNycTimezone:
             def now(tz=None):
                 if tz is None or tz == NY_TZ:
                     return fake_ny_now
-                # Any other tz (e.g. UTC): convert the same instant.
                 return fake_ny_now.astimezone(tz)
 
-        # ``ny_now`` is what ``_today_ny`` actually delegates to, so
-        # patch ``datetime`` in the module that defines ``ny_now``.
-        monkeypatch.setattr(
-            "app.config.settings.datetime", _FakeDatetime
-        )
-        # Confirm both call sites agree.
+        monkeypatch.setattr("app.config.settings.datetime", _FakeDatetime)
         assert ny_now() == fake_ny_now
-        assert IBKRClient._today_ny() == fake_ny_now.date()
+        assert LongbridgeClient._today_ny() == fake_ny_now.date()

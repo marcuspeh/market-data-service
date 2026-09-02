@@ -11,30 +11,14 @@ services:
       DATA_DIR: /var/lib/market-data
       POLYGON_API_KEY: ${POLYGON_API_KEY}
 
-      # IB Gateway runs inside this container, so the FastAPI app
-      # connects to it over the loopback. Paper trading is the only
-      # supported mode here.
-      IBKR_HOST: 127.0.0.1
-      IBKR_TRADING_MODE: paper
-      IBKR_CLIENT_ID: 1
-      IBKR_TIMEOUT_SECONDS: ${IBKR_TIMEOUT_SECONDS:-10}
-
-      # gnzsnz/ib-gateway env. IB_USER / IB_PASSWORD are the existing
-      # credentials from .env.
-      TWS_USERID: ${IB_USER}
-      TWS_PASSWORD: ${IB_PASSWORD}
-      TRADING_MODE: paper
-      TWS_ACCEPT_INCOMING: ${TWS_ACCEPT_INCOMING:-accept}
-      RELOGIN_AFTER_TWOFA_TIMEOUT: ${RELOGIN_AFTER_TWOFA_TIMEOUT:-yes}
-      TIME_ZONE: America/New_York
-      TZ: America/New_York
-      AUTO_RESTART_TIME: "04:00 AM"
-    # The FastAPI app listens on 8001 inside the container (matches
-    # the uvicorn command). IB Gateway's paper API is exposed on
-    # 127.0.0.1:4004 if you ever need to poke it from the host.
+      # Longbridge OpenAPI credentials (developer center).
+      LONGBRIDGE_APP_KEY: ${LONGBRIDGE_APP_KEY}
+      LONGBRIDGE_APP_SECRET: ${LONGBRIDGE_APP_SECRET}
+      LONGBRIDGE_ACCESS_TOKEN: ${LONGBRIDGE_ACCESS_TOKEN}
+      LONGBRIDGE_TIMEOUT_SECONDS: ${LONGBRIDGE_TIMEOUT_SECONDS:-10}
+      
     ports:
       - "${APP_PORT:-3556}:8001"
-      - "127.0.0.1:4004:4004"
     volumes:
       - /home/marcuspeh/data/market-data:/var/lib/market-data
     healthcheck:
@@ -42,4 +26,4 @@ services:
       interval: 30s
       timeout: 5s
       retries: 10
-      start_period: 180s
+      start_period: 30s

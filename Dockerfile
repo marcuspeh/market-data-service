@@ -2,22 +2,12 @@
 #
 # Unified image for market-data-service.
 #
-# Layered on top of gnzsnz/ib-gateway, which already brings:
-#   - Ubuntu 24.04 with Xvfb, IBC, socat, sshpass, sudo
-#   - IB Gateway binary + IBC bootstrap scripts under /home/ibgateway
-#   - socat that forwards 127.0.0.1:4004 -> 127.0.0.1:4002 (paper)
-#
-# We only need to add Python + the market-data-service app on top.
-# `docker-entrypoint.sh` waits for the API socket (4004) and then
-# execs uvicorn, so both IB Gateway and the FastAPI app live in
-# the same container but stay loosely coupled.
+# Plain Ubuntu 24.04 base with Python 3.12 + uv + the app on top.
+# The app no longer talks to IB Gateway — today's bar comes from
+# Longbridge's HTTP / WebSocket endpoints over the public internet.
 
-ARG IB_GATEWAY_IMAGE=ghcr.io/gnzsnz/ib-gateway:latest
+FROM ubuntu:24.04 AS base
 
-FROM ${IB_GATEWAY_IMAGE} AS base
-
-# Install Python (Ubuntu 24.04's stock python3.12) plus the small
-# toolchain the project needs. uv is pinned for reproducibility.
 USER root
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -38,16 +28,15 @@ RUN apt-get update -y \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
-# Drop back to the ibgateway user so the app layer matches upstream's
-# permission model (the home directory is writable).
+RUN useradd --create-home --uid 1000 --gid 1000 appuser
 USER 1000:1000
-WORKDIR /home/ibgateway/app
+WORKDIR /home/appuser/app
 
-ENV PATH="/home/ibgateway/app/.venv/bin:${PATH}" \
+ENV PATH="/home/appuser/app/.venv/bin:${PATH}" \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
-    UV_PROJECT_ENVIRONMENT=/home/ibgateway/app/.venv \
-    PYTHONPATH=/home/ibgateway/app
+    UV_PROJECT_ENVIRONMENT=/home/appuser/app/.venv \
+    PYTHONPATH=/home/appuser/app
 
 # ---------- builder ----------
 FROM base AS builder
@@ -55,24 +44,18 @@ FROM base AS builder
 COPY --chown=1000:1000 pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project
 
-COPY --chown=1000:1000 . /home/ibgateway/app
+COPY --chown=1000:1000 . /home/appuser/app
 RUN uv sync --frozen --no-dev
 
 # ---------- runtime ----------
 FROM base AS runtime
 
-COPY --chown=1000:1000 --from=builder /home/ibgateway/app /home/ibgateway/app
+COPY --chown=1000:1000 --from=builder /home/appuser/app /home/appuser/app
 
-# Entrypoint waits for the paper API socket then launches uvicorn.
-COPY --chown=1000:1000 docker-entrypoint.sh /home/ibgateway/app/docker-entrypoint.sh
-RUN chmod +x /home/ibgateway/app/docker-entrypoint.sh
+# In-container port matches docker-compose.yml's APP_PORT mapping.
+EXPOSE 8001
 
-# In-container port must match docker-compose.yml's APP_PORT mapping.
-EXPOSE 8001 4004
+ENV PORT_API=8001
 
-ENV PORT_API=8001 \
-    PORT_IB_API=4004 \
-    IB_API_READY_TIMEOUT=180
-
-ENTRYPOINT ["/home/ibgateway/app/docker-entrypoint.sh"]
+ENTRYPOINT ["/home/appuser/app/docker-entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
