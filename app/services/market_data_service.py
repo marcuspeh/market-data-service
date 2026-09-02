@@ -22,7 +22,7 @@ class MarketDataService:
         self._settings = settings
         self._store = store or MarketBarsStore(settings.market_data_dir)
         self._polygon = polygon or PolygonClient(settings)
-        self._longbridge = longbridge or LongbridxgeClient(settings)
+        self._longbridge = longbridge or LongbridgeClient(settings)
 
     async def get_bars(
         self,
