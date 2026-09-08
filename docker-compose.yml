@@ -5,6 +5,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    networks:
+      - algo01-net
     restart: unless-stopped
     container_name: market-data
     environment:
@@ -27,3 +29,7 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+
+networks:
+  algo01-net:
+    external: true
