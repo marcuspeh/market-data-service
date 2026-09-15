@@ -217,7 +217,7 @@ class TestErrorPropagation:
         def boom(*args, **kwargs):
             raise RuntimeError("transport down")
 
-        client._ctx.history_candlesticks_by_offset.side_effect = boom
+        client._ctx.candlesticks.side_effect = boom
 
         with pytest.raises(LongbridgeError, match="transport down"):
             await client._fetch_today_bar_uncached("AAPL")
@@ -249,11 +249,11 @@ class TestUncachedRequestShape:
         candle = MagicMock(open=1, high=2, low=0.5, close=1.5, volume=10, turnover=15)
         candle.timestamp = datetime(2026, 8, 21, tzinfo=timezone.utc)
 
-        client._ctx.history_candlesticks_by_offset.return_value = [candle]
+        client._ctx.candlesticks.return_value = [candle]
 
         await client._fetch_today_bar_uncached("AAPL")
 
-        call = client._ctx.history_candlesticks_by_offset.call_args
+        call = client._ctx.candlesticks.call_args
         assert call.args[0] == "AAPL.US"
 
     async def test_already_suffixed_symbol_passes_through(
@@ -263,16 +263,16 @@ class TestUncachedRequestShape:
         candle = MagicMock(open=1, high=2, low=0.5, close=1.5, volume=10, turnover=15)
         candle.timestamp = datetime(2026, 8, 21, tzinfo=timezone.utc)
 
-        client._ctx.history_candlesticks_by_offset.return_value = [candle]
+        client._ctx.candlesticks.return_value = [candle]
 
         await client._fetch_today_bar_uncached("700.HK")
 
-        call = client._ctx.history_candlesticks_by_offset.call_args
+        call = client._ctx.candlesticks.call_args
         assert call.args[0] == "700.HK"
 
     async def test_no_candles_returns_none(self, fake_settings: FakeSettings):
         client = _make_client(fake_settings)
-        client._ctx.history_candlesticks_by_offset.return_value = []
+        client._ctx.candlesticks.return_value = []
         assert await client._fetch_today_bar_uncached("AAPL") is None
 
     async def test_live_bar_drops_turnover_from_vwap_field(
@@ -297,7 +297,7 @@ class TestUncachedRequestShape:
         )
         candle.timestamp = datetime(2026, 9, 2, tzinfo=timezone.utc)
 
-        client._ctx.history_candlesticks_by_offset.return_value = [candle]
+        client._ctx.candlesticks.return_value = [candle]
 
         result = await client._fetch_today_bar_uncached("AAPL")
 

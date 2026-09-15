@@ -99,12 +99,11 @@ class LongbridgeClient:
         timeout = self._settings.longbridge_timeout_seconds
 
         def _call() -> list[Any]:
-            return self._ensure_ctx().history_candlesticks_by_offset(
+            return self._ensure_ctx().candlesticks(
                 symbol,
                 Period.Day,
-                AdjustType.NoAdjust,
-                True,  # forward: query from the offset towards latest
                 2,
+                AdjustType.NoAdjust,
             )
 
         try:
