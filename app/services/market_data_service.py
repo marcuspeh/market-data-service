@@ -98,8 +98,8 @@ class MarketDataService:
 
         return {
             "ticker": ticker,
-            "from": start.isoformat(),
-            "to": end.isoformat(),
+            "from": start,
+            "to": end,
             "backfilled_bars": backfilled_bars,
             "bars": bars,
         }
