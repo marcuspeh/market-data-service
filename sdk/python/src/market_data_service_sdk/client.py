@@ -39,13 +39,15 @@ _DEFAULT_TIMEOUT = 10.0
 
 
 def _parse_date(value: str) -> date:
-    return date.fromisoformat(value)
+    # Server now emits RFC3339 timestamps like "2025-11-13T00:00:00Z";
+    # ``date.fromisoformat`` accepts the bare date but not the time suffix,
+    # so slice to the leading YYYY-MM-DD before parsing.
+    return date.fromisoformat(value[:10])
 
 
 def _build_bar(payload: dict) -> Bar:
     return Bar(
         ticker=payload["ticker"],
-        date=_parse_date(payload["date"]),
         timestamp=int(payload["timestamp"]),
         open=float(payload["open"]),
         high=float(payload["high"]),

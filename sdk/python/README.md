@@ -45,7 +45,7 @@ async def main():
             to=date(2026, 8, 20),
         )
         for bar in bars.bars:
-            print(bar.date, bar.close, bar.source)
+            print(bar.timestamp_utc, bar.close, bar.source)
 
 asyncio.run(main())
 ```

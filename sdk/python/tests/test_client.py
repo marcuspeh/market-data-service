@@ -104,7 +104,6 @@ async def test_get_bars_returns_typed_bars() -> None:
                 "bars": [
                     {
                         "ticker": "AAPL",
-                        "date": "2026-08-10",
                         "timestamp": 1786334400000,
                         "open": 306.83,
                         "high": 308.26,
@@ -117,7 +116,6 @@ async def test_get_bars_returns_typed_bars() -> None:
                     },
                     {
                         "ticker": "AAPL",
-                        "date": "2026-08-20",
                         "timestamp": 1787198400000,
                         "open": 317.46,
                         "high": 320.28,
@@ -192,7 +190,6 @@ async def test_get_bars_handles_null_vwap_and_trade_count() -> None:
                 "bars": [
                     {
                         "ticker": "AAPL",
-                        "date": "2026-08-10",
                         "timestamp": 1786334400000,
                         "open": 1.0,
                         "high": 2.0,
@@ -293,7 +290,6 @@ def test_sync_client_returns_same_shapes() -> None:
                 "bars": [
                     {
                         "ticker": "AAPL",
-                        "date": "2026-08-10",
                         "timestamp": 1786334400000,
                         "open": 1.0,
                         "high": 2.0,

@@ -1,7 +1,5 @@
 package marketdata
 
-import "time"
-
 // ConstituentResponse matches the JSON shape returned by the
 // market-data-service `/constituents` endpoint.
 type ConstituentResponse struct {
@@ -14,26 +12,30 @@ type ConstituentResponse struct {
 // BarsResponse matches the JSON shape returned by the
 // market-data-service `/market-data/{ticker}` endpoint.
 type BarsResponse struct {
-	Ticker          string `json:"ticker"`
-	From            string `json:"from"`
-	To              string `json:"to"`
-	BackfilledBars  int    `json:"backfilled_bars"`
-	Bars            []Bar  `json:"bars"`
+	Ticker         string `json:"ticker"`
+	From           string `json:"from"`
+	To             string `json:"to"`
+	BackfilledBars int    `json:"backfilled_bars"`
+	Bars           []Bar  `json:"bars"`
 }
 
-// Bar is the per-day OHLCV payload returned by the proxy. We keep this
+// Bar is the per-bar OHLCV payload returned by the proxy. We keep this
 // type local so callers can convert into their own indicator-friendly
 // Bar (e.g. indicators.Bar) at the boundary.
+//
+// Timestamp is the bar close time in epoch milliseconds. Daily bars
+// carry NY midnight; minute / hour bars carry the actual close time.
+// There is no separate Date field — derive a calendar day from
+// Timestamp if needed.
 type Bar struct {
-	Ticker      string    `json:"ticker"`
-	Date        time.Time `json:"date"`
-	Timestamp   int64     `json:"timestamp"`
-	Open        float64   `json:"open"`
-	High        float64   `json:"high"`
-	Low         float64   `json:"low"`
-	Close       float64   `json:"close"`
-	Volume      float64   `json:"volume"`
-	VWAP        *float64  `json:"vwap,omitempty"`
-	TradeCount  *int      `json:"trade_count,omitempty"`
-	Source      string    `json:"source"`
+	Ticker     string   `json:"ticker"`
+	Timestamp  int64    `json:"timestamp"`
+	Open       float64  `json:"open"`
+	High       float64  `json:"high"`
+	Low        float64  `json:"low"`
+	Close      float64  `json:"close"`
+	Volume     float64  `json:"volume"`
+	VWAP       *float64 `json:"vwap,omitempty"`
+	TradeCount *int     `json:"trade_count,omitempty"`
+	Source     string   `json:"source"`
 }

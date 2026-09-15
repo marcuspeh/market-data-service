@@ -6,7 +6,7 @@ These mirror the JSON shapes returned by the FastAPI app in
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date as _date
+from datetime import date as _date, datetime, timezone
 from typing import Optional
 
 
@@ -22,11 +22,18 @@ class ConstituentsResponse:
 
 @dataclass
 class Bar:
-    """One daily OHLCV bar for a ticker."""
+    """One OHLCV bar for a ticker.
+
+    A bar's identity is ``timestamp`` (epoch milliseconds at the bar's
+    close time). Daily bars carry NY midnight; minute / hour bars carry
+    the actual close time. There is no separate ``date`` field —
+    callers who need a calendar day for a daily bar should derive it
+    via ``datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc)``
+    or convert to US/Eastern explicitly.
+    """
 
     ticker: str
-    date: _date
-    timestamp: int  # epoch milliseconds (Nasdaq calendar day, NY tz)
+    timestamp: int
     open: float
     high: float
     low: float
@@ -36,10 +43,15 @@ class Bar:
     trade_count: Optional[int] = None
     source: str = ""  # "cache" or "longbridge"
 
+    @property
+    def timestamp_utc(self) -> datetime:
+        """Bar close time as a UTC ``datetime``."""
+        return datetime.fromtimestamp(self.timestamp / 1000, tz=timezone.utc)
+
 
 @dataclass
 class BarsResponse:
-    """Daily OHLCV bars for a ticker across a closed date range."""
+    """OHLCV bars for a ticker across a closed date range."""
 
     ticker: str
     from_: _date
