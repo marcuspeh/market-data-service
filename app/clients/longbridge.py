@@ -133,10 +133,27 @@ class LongbridgeClient:
         }
 
     def _format_symbol(self, ticker: str) -> str:
-        """Map a bare US ticker to Longbridge's ``<TICKER>.US`` form."""
-        if "." in ticker:
-            return ticker.upper()
-        return f"{ticker.upper()}{self._settings.longbridge_region_suffix}"
+        """Map a US ticker to Longbridge's ``<TICKER>.<REGION>`` form.
+
+        Three cases:
+
+        * Bare US ticker (no dot) → append the configured US region suffix
+          (e.g. ``AAPL`` → ``AAPL.US``).
+        * US OCC class-share ticker like ``BRK.B`` / ``BRK.A`` / ``BF.B``
+          where the trailing segment is a single letter → the dot is part of
+          the OCC symbol, not a region; append ``.US`` (e.g. ``BRK.B.US``).
+        * Anything else with a dot is assumed to already carry a non-US
+          region suffix (e.g. ``700.HK``) and is passed through unchanged.
+        """
+        upper = ticker.upper()
+        region_suffix = self._settings.longbridge_region_suffix.lstrip(".").upper()
+        if "." in upper:
+            tail = upper.rsplit(".", 1)[-1]
+            if tail == region_suffix:
+                return upper
+            if len(tail) != 1 or not tail.isalpha():
+                return upper
+        return f"{upper}{self._settings.longbridge_region_suffix}"
 
     @staticmethod
     def _candle_ts_ms(candle: Any) -> int:

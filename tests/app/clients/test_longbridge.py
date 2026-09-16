@@ -270,6 +270,21 @@ class TestUncachedRequestShape:
         call = client._ctx.candlesticks.call_args
         assert call.args[0] == "700.HK"
 
+    async def test_us_class_share_gets_us_region_appended(
+        self, fake_settings: FakeSettings
+    ):
+        """BRK.B's dot is part of the OCC symbol, not a region suffix."""
+        client = _make_client(fake_settings)
+        candle = MagicMock(open=1, high=2, low=0.5, close=1.5, volume=10, turnover=15)
+        candle.timestamp = datetime(2026, 8, 21, tzinfo=timezone.utc)
+
+        client._ctx.candlesticks.return_value = [candle]
+
+        await client._fetch_today_bar_uncached("BRK.B")
+
+        call = client._ctx.candlesticks.call_args
+        assert call.args[0] == "BRK.B.US"
+
     async def test_no_candles_returns_none(self, fake_settings: FakeSettings):
         client = _make_client(fake_settings)
         client._ctx.candlesticks.return_value = []
