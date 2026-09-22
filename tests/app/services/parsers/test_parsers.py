@@ -90,6 +90,26 @@ class TestSsgaParser:
         assert result[0]["name"] == "NVIDIA CORP"
         assert result[1]["ticker"] == "AAPL"
 
+    def test_skips_ssga_placeholder_tickers(self):
+        """SSGA uses '-' for the USD cash sleeve and '<digits>D' codes for
+        securities without a real exchange ticker (e.g. CVRs). Both must
+        be dropped."""
+        df = pd.DataFrame(
+            {
+                "Ticker": ["NVDA", "-", "2602335D", "2682320D", "AAPL"],
+                "Name": [
+                    "NVIDIA CORP",
+                    "US DOLLAR",
+                    "TPG INC",
+                    "ONEOK CVR",
+                    "APPLE INC",
+                ],
+                "Weight": [8.0, 0.21, 0.0001, 0.0, 6.0],
+            }
+        )
+        result = ssga_parse(_xlsx_bytes(df, skiprows=4))
+        assert [r["ticker"] for r in result] == ["NVDA", "AAPL"]
+
 
 class TestIsharesParser:
     def test_happy_path(self):
@@ -157,3 +177,13 @@ class TestIsharesParser:
         csv = "garbage\nmore garbage\n"
         with pytest.raises(ValueError, match="Could not locate holdings header"):
             ishares_parse(csv.encode("utf-8"))
+
+    def test_skips_placeholder_tickers(self):
+        csv = (
+            "Ticker,Name,Sector,Asset Class,Market Value,Weight (%)\n"
+            '"NVDA","NVIDIA CORP","Tech","Equity","1","8.0"\n'
+            '"2602335D","CONTRA HOLOGIC","Health","Equity","2","0.01"\n'
+            '"AAPL","APPLE INC","Tech","Equity","3","7.0"\n'
+        )
+        result = ishares_parse(csv.encode("utf-8"))
+        assert [r["ticker"] for r in result] == ["NVDA", "AAPL"]

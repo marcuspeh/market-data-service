@@ -12,6 +12,8 @@ import io
 import logging
 from typing import Any
 
+from app.services.parsers import is_valid_ticker
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,7 +52,7 @@ def parse(content: bytes) -> list[dict[str, Any]]:
         name = row[name_idx].strip()
         weight_raw = row[weight_idx].strip()
 
-        if not ticker or ticker in {"-", "—"}:
+        if not is_valid_ticker(ticker):
             continue
 
         try:

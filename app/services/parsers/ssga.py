@@ -10,6 +10,8 @@ from typing import Any
 
 import pandas as pd
 
+from app.services.parsers import is_valid_ticker
+
 logger = logging.getLogger(__name__)
 
 _REQUIRED_COLUMNS = ("Ticker", "Name", "Weight")
@@ -35,10 +37,13 @@ def parse(content: bytes) -> list[dict[str, Any]]:
 
     constituents: list[dict[str, Any]] = []
     for _, row in df.iterrows():
+        ticker = str(row["Ticker"]).strip()
+        if not is_valid_ticker(ticker):
+            continue
         try:
             constituents.append(
                 {
-                    "ticker": str(row["Ticker"]).strip(),
+                    "ticker": ticker,
                     "name": str(row["Name"]).strip(),
                     "weight": float(row["Weight"]),
                 }
