@@ -22,7 +22,7 @@ services:
     ports:
       - "${APP_PORT:-3556}:8001"
     volumes:
-      - /home/marcuspeh/data/market-data:/var/lib/market-data
+      - /mnt/data/market-data:/var/lib/market-data
     healthcheck:
       test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8001' >/dev/null 2>&1 || exit 1"]
       interval: 30s
