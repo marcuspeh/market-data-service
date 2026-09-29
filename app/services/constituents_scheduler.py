@@ -88,7 +88,7 @@ class ConstituentsScheduler:
                     # Refresh failed for this ticker (count == -1); skip.
                     continue
                 try:
-                    self._market_data.backfill_yesterday(ticker)
+                    await self._market_data.backfill_yesterday(ticker)
                 except Exception as e:  # noqa: BLE001
                     logger.error(f"backfill_yesterday failed for {ticker}: {e}")
         except Exception as e:  # noqa: BLE001
