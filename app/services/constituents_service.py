@@ -3,11 +3,11 @@ them on schedule. Refresh is driven by the APScheduler job in
 :mod:`app.services.constituents_scheduler` (runs every day at 8:30 ET
 and calls :meth:`refresh_symbol` / :meth:`refresh_all`).
 """
-import logging
 from datetime import date
 from typing import Any
 
 from app.config.settings import get_settings
+from app.logging_setup import client
 from app.services.constituents_fetcher import (
     ETF_REGISTRY,
     fetch_etf_constituents,
@@ -17,7 +17,7 @@ from app.services.constituents_store import (
     ConstituentsStore,
 )
 
-logger = logging.getLogger(__name__)
+log = client()
 
 
 class UnsupportedSymbolError(ValueError):
@@ -60,8 +60,9 @@ class ConstituentsService:
         except ConstituentsNotFoundError as e:
             raise SnapshotNotFoundError(symbol, snapshot_date) from e
 
-        logger.info(
-            f"Returning {len(tickers)} constituents for {symbol} on {snapshot_date}"
+        log.info(
+            "Returning %d constituents for %s on %s",
+            len(tickers), symbol, snapshot_date,
         )
         return {
             "symbol": symbol,
@@ -77,7 +78,7 @@ class ConstituentsService:
         if symbol not in self.SUPPORTED_SYMBOLS:
             raise UnsupportedSymbolError(symbol, self.SUPPORTED_SYMBOLS)
 
-        logger.info(f"Refreshing {symbol} constituents for {snapshot_date}")
+        log.info("Refreshing %s constituents for %s", symbol, snapshot_date)
         holdings = await fetch_etf_constituents(symbol)
         tickers = [row["ticker"] for row in holdings]
         self._store.write_snapshot(symbol, snapshot_date, tickers)
@@ -90,6 +91,6 @@ class ConstituentsService:
             try:
                 results[symbol] = await self.refresh_symbol(symbol, snapshot_date)
             except Exception as e:  # noqa: BLE001 — best-effort refresh
-                logger.error(f"Failed to refresh {symbol}: {e}")
+                log.error("Failed to refresh %s: %s", symbol, e)
                 results[symbol] = -1
         return results

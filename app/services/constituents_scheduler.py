@@ -10,7 +10,6 @@ holidays). The job:
      :meth:`MarketDataService.backfill_yesterday` — by 8:30 ET the
      previous trading day's bar is final and safe to cache once.
 """
-import logging
 from datetime import datetime, time, timedelta
 
 try:
@@ -26,10 +25,11 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 
 from app.config.settings import get_settings
+from app.logging_setup import client
 from app.services.constituents_service import ConstituentsService
 from app.services.market_data_service import MarketDataService
 
-logger = logging.getLogger(__name__)
+log = client()
 
 
 class ConstituentsScheduler:
@@ -50,14 +50,14 @@ class ConstituentsScheduler:
         self._started = True
         self._scheduler.start()
         self._schedule_next_run()
-        logger.info("Constituents scheduler started")
+        log.info("Constituents scheduler started")
 
     def stop(self) -> None:
         if not self._started:
             return
         self._started = False
         self._scheduler.shutdown(wait=False)
-        logger.info("Constituents scheduler stopped")
+        log.info("Constituents scheduler stopped")
 
     def _schedule_next_run(self) -> None:
         """Schedule the next run for 8:30 AM New York tomorrow."""
@@ -72,15 +72,15 @@ class ConstituentsScheduler:
             replace_existing=True,
             misfire_grace_time=300,  # tolerate up to 5min late start
         )
-        logger.info(f"Next constituents refresh scheduled at {run_at.isoformat()}")
+        log.info("Next constituents refresh scheduled at %s", run_at.isoformat())
 
     async def _refresh_and_reschedule(self) -> None:
         snap_date = datetime.now(NY_TZ).date()
         try:
             results = await self._service.refresh_all(snap_date)
-            logger.info(
-                f"Scheduled constituents refresh complete for {snap_date}: "
-                f"{results}"
+            log.info(
+                "Scheduled constituents refresh complete for %s: %s",
+                snap_date, results,
             )
 
             for ticker, count in results.items():
@@ -90,8 +90,8 @@ class ConstituentsScheduler:
                 try:
                     await self._market_data.backfill_yesterday(ticker)
                 except Exception as e:  # noqa: BLE001
-                    logger.error(f"backfill_yesterday failed for {ticker}: {e}")
+                    log.error("backfill_yesterday failed for %s: %s", ticker, e)
         except Exception as e:  # noqa: BLE001
-            logger.error(f"Scheduled refresh failed for {snap_date}: {e}")
+            log.error("Scheduled refresh failed for %s: %s", snap_date, e)
         finally:
             self._schedule_next_run()

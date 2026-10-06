@@ -3,14 +3,14 @@
 The registry below maps each supported ticker to ``(provider, link)``. The
 provider key selects which parser module is invoked on the downloaded bytes.
 """
-import logging
 from typing import Any
 
 import httpx
 
+from app.logging_setup import client
 from app.services.parsers import ishares, ssga
 
-logger = logging.getLogger(__name__)
+log = client()
 
 # Each provider must expose ``parse(content: bytes) -> list[dict]``.
 PROVIDER_PARSERS: dict[str, Any] = {
@@ -79,7 +79,7 @@ async def fetch_etf_constituents(symbol: str) -> list[dict[str, Any]]:
 
     parser = PROVIDER_PARSERS[provider]
 
-    logger.info(f"Fetching {symbol.upper()} (provider={provider}) from {url}")
+    log.info("Fetching %s (provider=%s) from %s", symbol.upper(), provider, url)
     async with httpx.AsyncClient(headers=_HEADERS, follow_redirects=True) as client:
         response = await client.get(url)
         response.raise_for_status()

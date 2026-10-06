@@ -39,6 +39,21 @@ class Settings(BaseSettings):
     longbridge_timeout_seconds: float = Field(default=10.0)
     longbridge_region_suffix: str = Field(default=".US")
 
+    # Logging SDK (logging_system). The project name is used as the
+    # Kafka message key, so the logging collector partitions all events
+    # for this service together.
+    log_kafka_brokers: str = Field(default="logging-kafka:9092")
+    log_topic: str = Field(default="logs")
+    log_project: str = Field(default="market-data")
+    # 0 = synchronous sends; >0 buffers on a worker thread (drop-oldest).
+    log_async_capacity: int = Field(default=4096)
+    log_flush_interval: float = Field(default=1.0)
+    # Set to a non-empty value (e.g. "0") to fully disable the SDK and
+    # fall back to stderr-only logging. Useful for tests and CI.
+    log_disabled: bool = Field(default=False)
+    # Stdlib log level for the SDK's LoggingHandler.
+    log_level: str = Field(default="INFO")
+
     @property
     def market_data_dir(self) -> Path:
         return Path(self.data_dir) / "market"

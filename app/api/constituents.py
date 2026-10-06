@@ -1,8 +1,8 @@
-import logging
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.logging_setup import client
 from app.services.constituents_service import (
     ConstituentsService,
     SnapshotNotFoundError,
@@ -10,7 +10,7 @@ from app.services.constituents_service import (
 )
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
+log = client()
 _service = ConstituentsService()
 
 
@@ -37,7 +37,7 @@ async def get_constituents(
     except SnapshotNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        logger.error(f"Error retrieving constituents for {etf} on {date_}: {e}")
+        log.error("Error retrieving constituents for %s on %s: %s", etf, date_, e)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to retrieve constituents: {e}",

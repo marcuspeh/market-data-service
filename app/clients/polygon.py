@@ -1,12 +1,12 @@
-import logging
 from datetime import date
 from typing import Any
 
 import httpx
 
 from app.config.settings import Settings
+from app.logging_setup import client
 
-logger = logging.getLogger(__name__)
+log = client()
 
 
 class PolygonError(RuntimeError):
@@ -37,7 +37,7 @@ class PolygonClient:
         params = {"adjusted": "true", "sort": "asc", "limit": 5000}
         headers = {"Authorization": f"Bearer {self._settings.polygon_api_key}"}
 
-        logger.info(f"Polygon GET {url}")
+        log.info("Polygon GET %s", url)
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.get(url, params=params, headers=headers)
             resp.raise_for_status()

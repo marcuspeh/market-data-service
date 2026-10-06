@@ -9,12 +9,12 @@ columns are ``Ticker``, ``Name``, and ``Weight (%)``.
 """
 import csv
 import io
-import logging
 from typing import Any
 
+from app.logging_setup import client
 from app.services.parsers import is_valid_ticker
 
-logger = logging.getLogger(__name__)
+log = client()
 
 
 def parse(content: bytes) -> list[dict[str, Any]]:
@@ -64,5 +64,5 @@ def parse(content: bytes) -> list[dict[str, Any]]:
             {"ticker": ticker, "name": name, "weight": weight}
         )
 
-    logger.info(f"iShares parser: extracted {len(constituents)} holdings")
+    log.info("iShares parser: extracted %d holdings", len(constituents))
     return constituents

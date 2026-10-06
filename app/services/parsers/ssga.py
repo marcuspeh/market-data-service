@@ -5,14 +5,14 @@ metadata; the holdings table header starts around row 4 and uses the
 columns ``Ticker``, ``Name``, ``Weight`` (case-insensitive, with some variants).
 """
 import io
-import logging
 from typing import Any
 
 import pandas as pd
 
+from app.logging_setup import client
 from app.services.parsers import is_valid_ticker
 
-logger = logging.getLogger(__name__)
+log = client()
 
 _REQUIRED_COLUMNS = ("Ticker", "Name", "Weight")
 
@@ -51,5 +51,5 @@ def parse(content: bytes) -> list[dict[str, Any]]:
         except (ValueError, TypeError):
             continue
 
-    logger.info(f"SSGA parser: extracted {len(constituents)} holdings")
+    log.info("SSGA parser: extracted %d holdings", len(constituents))
     return constituents

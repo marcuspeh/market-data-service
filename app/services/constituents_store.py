@@ -19,14 +19,15 @@ files. Writes are append-style: load the year's parquet (if any),
 drop rows whose date matches the new snapshot, append the new rows,
 write back atomically via a temp-file rename.
 """
-import logging
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-logger = logging.getLogger(__name__)
+from app.logging_setup import client
+
+log = client()
 
 DATE_COL = "date"
 TICKER_COL = "ticker"
@@ -159,6 +160,7 @@ class ConstituentsStore:
         combined.to_parquet(tmp, index=False, engine="pyarrow")
         tmp.replace(path)  # atomic on POSIX
 
-        logger.info(
-            f"Wrote {len(tickers)} rows for {symbol} on {snapshot_date} -> {path}"
+        log.info(
+            "Wrote %d rows for %s on %s -> %s",
+            len(tickers), symbol, snapshot_date, path,
         )

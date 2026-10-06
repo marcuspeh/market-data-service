@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import threading
 import time
 from datetime import date, datetime, timezone
@@ -11,8 +10,9 @@ from typing import Any
 from longbridge.openapi import AdjustType, Config, Period, QuoteContext  # type: ignore[import-not-found]
 
 from app.config.settings import NY_TZ, Settings, ny_now
+from app.logging_setup import client
 
-logger = logging.getLogger(__name__)
+log = client()
 
 DEFAULT_CACHE_TTL_SECONDS = 30.0  # 30 seconds
 
@@ -59,7 +59,7 @@ class LongbridgeClient:
         with self._lock:
             cached = self._cache.get(key)
             if cached is not None and cached[1] > now:
-                logger.debug(f"Longbridge cache hit for {ticker}")
+                log.debug("Longbridge cache hit for %s", ticker)
                 return cached[0]
             self._cache.pop(key, None)
 

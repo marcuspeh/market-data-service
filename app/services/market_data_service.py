@@ -1,14 +1,14 @@
 """Daily OHLCV bar orchestrator: parquet cache + Polygon backfill + Longbridge live bar."""
-import logging
 from datetime import date, datetime, timedelta
 from typing import Any
 
 from app.clients.longbridge import LongbridgeClient, LongbridgeError
 from app.clients.polygon import PolygonClient, PolygonError
 from app.config.settings import Settings, ny_from_ts
+from app.logging_setup import client
 from app.services.market_bars_store import MarketBarsStore
 
-logger = logging.getLogger(__name__)
+log = client()
 
 
 class MarketDataService:
@@ -52,17 +52,17 @@ class MarketDataService:
             if missing:
                 backfill_start = missing[0]
                 backfill_end = missing[-1]
-                logger.info(
-                    f"{len(missing)} missing date(s) for {ticker}; "
-                    f"backfilling from Polygon "
-                    f"({backfill_start}..{backfill_end})"
+                log.info(
+                    "%d missing date(s) for %s; backfilling from Polygon "
+                    "(%s..%s)",
+                    len(missing), ticker, backfill_start, backfill_end,
                 )
                 try:
                     polygon_bars = await self._polygon.fetch_daily_bars(
                         ticker, backfill_start, backfill_end
                     )
                 except PolygonError as e:
-                    logger.error(f"Polygon fetch failed for {ticker}: {e}")
+                    log.error("Polygon fetch failed for %s: %s", ticker, e)
                     raise
 
                 # Filter Polygon's today-bar (intraday) before persisting.
@@ -80,11 +80,11 @@ class MarketDataService:
                 bars.append({**row, "source": "cache"})
 
         if today <= end:
-            logger.info(f"Fetching today's daily bar for {ticker} from Longbridge")
+            log.info("Fetching today's daily bar for %s from Longbridge", ticker)
             try:
                 today_bar = await self._longbridge.fetch_today_bar(ticker)
             except LongbridgeError as e:
-                logger.error(f"Longbridge fetch failed for {ticker}: {e}")
+                log.error("Longbridge fetch failed for %s: %s", ticker, e)
                 raise
 
             if today_bar is not None:
@@ -92,7 +92,7 @@ class MarketDataService:
                     {**self._normalize_today_bar(today_bar, ticker), "source": "longbridge"}
                 )
             else:
-                logger.info(f"Longbridge returned no bar for {ticker} today")
+                log.info("Longbridge returned no bar for %s today", ticker)
 
         bars.sort(key=lambda b: b["timestamp"])
 
@@ -114,13 +114,13 @@ class MarketDataService:
                 ticker, yesterday, yesterday
             )
         except PolygonError as e:
-            logger.error(f"Polygon fetch for {ticker} yesterday failed: {e}")
+            log.error("Polygon fetch for %s yesterday failed: %s", ticker, e)
             return 0
         if not bars:
-            logger.info(f"Polygon returned no bar for {ticker} on {yesterday}")
+            log.info("Polygon returned no bar for %s on %s", ticker, yesterday)
             return 0
         self._store.write_bars(ticker, bars)
-        logger.info(f"Cached {ticker} {yesterday} from Polygon")
+        log.info("Cached %s %s from Polygon", ticker, yesterday)
         return 1
 
     @staticmethod

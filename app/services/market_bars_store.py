@@ -24,7 +24,6 @@ Writes are append-style: load the year's parquet (if any), drop rows
 whose date matches the new bars, concatenate the new bars, sort by
 date ascending, and write back atomically via a temp-file rename.
 """
-import logging
 import math
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -33,8 +32,9 @@ from typing import Any
 import pandas as pd
 
 from app.config.settings import ny_from_ts, ny_midnight_ts
+from app.logging_setup import client
 
-logger = logging.getLogger(__name__)
+log = client()
 
 DATE_COL = "date"
 TICKER_COL = "ticker"
@@ -164,9 +164,9 @@ class MarketBarsStore:
             year_df = year_df.drop(columns=[DATE_COL + "_year"])
             self._write_year(ticker, int(year), year_df)
 
-        logger.info(
-            f"Wrote {len(bars)} bars for {ticker} "
-            f"into {df[DATE_COL + '_year'].nunique()} yearly file(s)"
+        log.info(
+            "Wrote %d bars for %s into %d yearly file(s)",
+            len(bars), ticker, df[DATE_COL + "_year"].nunique(),
         )
 
     def _write_year(self, ticker: str, year: int, new_df: pd.DataFrame) -> None:

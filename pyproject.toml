@@ -13,7 +13,11 @@ dependencies = [
     "pydantic-settings>=2.14.2",
     "requests>=2.34.2",
     "uvicorn>=0.52.0",
+    "logging-sdk",
 ]
+
+[tool.uv.sources]
+logging-sdk = { git = "https://github.com/marcuspeh/logging.git", branch = "main", subdirectory = "sdk/python" }
 
 [dependency-groups]
 dev = [

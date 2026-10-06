@@ -1,22 +1,30 @@
 """Shared fixtures and helpers for the unit-test suite."""
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 
 import pytest
 
 import app.config.settings as settings_module
+from app import logging_setup as logging_pkg
 
 
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Wipe env vars so settings is hermetic; tests set values explicitly."""
+    """Wipe env vars so settings is hermetic; tests set values explicitly.
+
+    Also force ``LOG_DISABLED=1`` so :func:`app.logging_setup.setup_logging`
+    installs only the stderr handler and skips the Kafka client (mirrors
+    config_store/backend's test layout).
+    """
     for key in list(os.environ):
-        if key.startswith(("POLYGON_", "LONGBRIDGE_", "APP_", "DATA_")):
+        if key.startswith(("POLYGON_", "LONGBRIDGE_", "APP_", "DATA_", "LOG_")):
             monkeypatch.delenv(key, raising=False)
 
     hermetic_settings = settings_module.Settings(_env_file=None)
+    hermetic_settings.log_disabled = True
     settings_module.get_settings.cache_clear()
 
     def _get_hermetic():
@@ -34,6 +42,13 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
             )
         except AttributeError:
             pass
+
+    # Reset the cached SDK client + root handlers so setup_logging can be
+    # called freely from individual test files without leaking state.
+    logging_pkg._client_instance = None
+    root_handlers = list(__import__("logging").getLogger().handlers)
+    for h in root_handlers:
+        __import__("logging").getLogger().removeHandler(h)
 
 
 @dataclass
