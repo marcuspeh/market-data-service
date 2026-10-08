@@ -110,3 +110,49 @@ class TestRefreshAndReschedule:
         # Should NOT raise.
         await sch._refresh_and_reschedule()
         sch._schedule_next_run.assert_called_once()
+
+    async def test_calls_t1_backfill_after_refresh(self):
+        """After refresh, the scheduler should ask the service to
+        plug any T-1 gap with T-2 data and pass the snapshot date."""
+        sch = ConstituentsScheduler(
+            service=MagicMock(),
+            market_data_service=MagicMock(),
+        )
+        sch._schedule_next_run = MagicMock()
+
+        async def fake_refresh_all(date_):
+            return {"SPY": 10, "QQQ": 5, "IWM": -1}
+
+        sch._service.refresh_all = fake_refresh_all
+        sch._service.backfill_missing_t1_from_t2 = MagicMock(
+            return_value={"SPY": "backfilled", "QQQ": "already_present", "IWM": "no_t2_data"}
+        )
+        sch._market_data.backfill_yesterday = MagicMock()
+
+        await sch._refresh_and_reschedule()
+
+        sch._service.backfill_missing_t1_from_t2.assert_called_once()
+        sch._schedule_next_run.assert_called_once()
+
+    async def test_t1_backfill_failure_does_not_break_loop(self):
+        sch = ConstituentsScheduler(
+            service=MagicMock(),
+            market_data_service=MagicMock(),
+        )
+        sch._schedule_next_run = MagicMock()
+
+        async def fake_refresh_all(date_):
+            return {"SPY": 1}
+
+        sch._service.refresh_all = fake_refresh_all
+        sch._service.backfill_missing_t1_from_t2 = MagicMock(
+            side_effect=RuntimeError("backfill boom")
+        )
+        sch._market_data.backfill_yesterday = MagicMock()
+
+        # Should NOT raise.
+        await sch._refresh_and_reschedule()
+
+        # The rest of the pipeline still runs and we still re-arm.
+        sch._market_data.backfill_yesterday.assert_called_once_with("SPY")
+        sch._schedule_next_run.assert_called_once()

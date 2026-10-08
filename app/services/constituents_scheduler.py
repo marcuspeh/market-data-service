@@ -5,7 +5,9 @@ holidays). The job:
 
   1. Refreshes every supported ETF's holdings via
      :meth:`ConstituentsService.refresh_all`.
-  2. For every ticker that succeeded, also persists **yesterday's**
+  2. Backfills the T-1 snapshot with T-2 data for any symbol whose
+     upstream fetch left T-1 empty (idempotent — only acts on gaps).
+  3. For every ticker that succeeded, also persists **yesterday's**
      daily bar to the parquet cache via
      :meth:`MarketDataService.backfill_yesterday` — by 8:30 ET the
      previous trading day's bar is final and safe to cache once.
@@ -82,6 +84,20 @@ class ConstituentsScheduler:
                 "Scheduled constituents refresh complete for %s: %s",
                 snap_date, results,
             )
+
+            # After upstream refresh, plug any T-1 gap with T-2 data so
+            # callers asking for yesterday's holdings always get a
+            # snapshot back.
+            try:
+                backfill_results = (
+                    self._service.backfill_missing_t1_from_t2(snap_date)
+                )
+                log.info(
+                    "T-1 backfill from T-2 complete for %s: %s",
+                    snap_date, backfill_results,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.error("backfill_missing_t1_from_t2 failed: %s", e)
 
             for ticker, count in results.items():
                 if count < 1:

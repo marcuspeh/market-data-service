@@ -3,7 +3,7 @@ ConstituentsService read/write flow."""
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -284,3 +284,246 @@ class TestServiceRefresh:
 
         assert results["QQQ"] == -1
         assert all(v > 0 for k, v in results.items() if k != "QQQ")
+
+
+class TestBackfillGapsInRecentWindow:
+    """Tests for
+    :meth:`ConstituentsService.backfill_gaps_in_recent_window`."""
+
+    def _write(self, store: ConstituentsStore, symbol: str, d: date, rows: list[str]):
+        store.write_snapshot(symbol, d, rows)
+
+    def test_fills_single_t1_gap_from_previous_day(
+        self, store: ConstituentsStore
+    ):
+        from app.services.constituents_fetcher import ETF_REGISTRY
+
+        today = date(2026, 8, 13)  # Thursday
+        t1 = date(2026, 8, 12)  # Wednesday (gap)
+        t2 = date(2026, 8, 11)  # Tuesday (source)
+
+        for symbol in ETF_REGISTRY:
+            self._write(store, symbol, t2, ["AAPL", "NVDA"])
+            # t1 missing for all symbols
+
+        service = ConstituentsService(store=store)
+        results = service.backfill_gaps_in_recent_window(today=today)
+
+        assert set(results) == set(ETF_REGISTRY)
+        assert all(r == "backfilled:1_gaps" for r in results.values())
+        for symbol in ETF_REGISTRY:
+            assert store.read_snapshot(symbol, t1) == ["AAPL", "NVDA"]
+            # Source untouched.
+            assert store.read_snapshot(symbol, t2) == ["AAPL", "NVDA"]
+
+    def test_fills_multiple_gaps_in_window(
+        self, store: ConstituentsStore
+    ):
+        """A contiguous run of gaps in the window is filled in
+        chronological order — each gap pulls from the most recent
+        prior snapshot, which after the previous fill may itself be a
+        just-backfilled row."""
+        from app.services.constituents_fetcher import ETF_REGISTRY
+
+        today = date(2026, 8, 13)
+        # Window = [2026-08-06, 2026-08-12].
+        # Anchor the chain with a source at 2026-08-05, so all 7
+        # window-days get filled (08-06 from 08-05, then 08-07 from
+        # 08-06, etc. — each prior fill becomes the next gap's source).
+        for symbol in ETF_REGISTRY:
+            self._write(store, symbol, date(2026, 8, 5), ["OLD"])
+
+        service = ConstituentsService(store=store)
+        results = service.backfill_gaps_in_recent_window(today=today)
+
+        assert all(r == "backfilled:7_gaps" for r in results.values())
+        for symbol in ETF_REGISTRY:
+            for offset in range(1, 8):
+                # Every window day now has a snapshot, and they all
+                # trace back to the anchor at 08-05.
+                assert store.read_snapshot(
+                    symbol, today - timedelta(days=offset)
+                ) is not None
+
+    def test_does_not_overwrite_existing_data(
+        self, store: ConstituentsStore
+    ):
+        from app.services.constituents_fetcher import ETF_REGISTRY
+
+        today = date(2026, 8, 13)
+        # Full coverage in the 7-day window — no gaps.
+        for symbol in ETF_REGISTRY:
+            for offset in range(1, 8):
+                self._write(
+                    store, symbol, today - timedelta(days=offset), [f"DAY-{offset}"]
+                )
+
+        service = ConstituentsService(store=store)
+        results = service.backfill_gaps_in_recent_window(today=today)
+
+        assert all(r == "already_present" for r in results.values())
+        # No real rows were rewritten.
+        for symbol in ETF_REGISTRY:
+            for offset in range(1, 8):
+                assert store.read_snapshot(
+                    symbol, today - timedelta(days=offset)
+                ) == [f"DAY-{offset}"]
+
+    def test_today_is_not_scanned(
+        self, store: ConstituentsStore
+    ):
+        """Today is excluded from the window — refresh_all is responsible
+        for writing today's snapshot."""
+        from app.services.constituents_fetcher import ETF_REGISTRY
+
+        today = date(2026, 8, 13)
+        # Write a row for today only; gap-fill must not touch it.
+        for symbol in ETF_REGISTRY:
+            self._write(store, symbol, today, ["TODAY"])
+        # Fill the prior 7 days so only today is sparse.
+        for offset in range(1, 8):
+            for symbol in ETF_REGISTRY:
+                self._write(store, symbol, today - timedelta(days=offset), [f"D-{offset}"])
+
+        service = ConstituentsService(store=store)
+        results = service.backfill_gaps_in_recent_window(today=today)
+
+        assert all(r == "already_present" for r in results.values())
+
+    def test_window_is_exactly_seven_days(
+        self, store: ConstituentsStore
+    ):
+        """Day T-8 (outside the 7-day window) being absent must NOT
+        be reported as a gap and must NOT be filled."""
+        from app.services.constituents_fetcher import ETF_REGISTRY
+
+        today = date(2026, 8, 13)
+        for symbol in ETF_REGISTRY:
+            # Fill T-7..T-1 (the whole window) for each symbol.
+            for offset in range(1, 8):
+                self._write(
+                    store, symbol, today - timedelta(days=offset), [f"D-{offset}"]
+                )
+            # T-8 has no data — must remain unfilled.
+            assert not store.has_snapshot(symbol, today - timedelta(days=8))
+
+        service = ConstituentsService(store=store)
+        results = service.backfill_gaps_in_recent_window(today=today)
+
+        assert all(r == "already_present" for r in results.values())
+        for symbol in ETF_REGISTRY:
+            with pytest.raises(ConstituentsNotFoundError):
+                store.read_snapshot(symbol, today - timedelta(days=8))
+
+    def test_uses_older_source_when_window_fully_empty(
+        self, store: ConstituentsStore
+    ):
+        """All 7 days in the window are gaps, but a snapshot from
+        further back exists → that older snapshot fills every gap."""
+        from app.services.constituents_fetcher import ETF_REGISTRY
+
+        today = date(2026, 8, 13)
+        for symbol in ETF_REGISTRY:
+            self._write(store, symbol, today - timedelta(days=30), ["OLD-BUT-VALID"])
+
+        service = ConstituentsService(store=store)
+        results = service.backfill_gaps_in_recent_window(today=today)
+
+        assert all(r == "backfilled:7_gaps" for r in results.values())
+        for symbol in ETF_REGISTRY:
+            for offset in range(1, 8):
+                assert store.read_snapshot(
+                    symbol, today - timedelta(days=offset)
+                ) == ["OLD-BUT-VALID"]
+
+    def test_no_source_data_when_no_prior_history(
+        self, store: ConstituentsStore
+    ):
+        from app.services.constituents_fetcher import ETF_REGISTRY
+
+        today = date(2026, 8, 13)
+        service = ConstituentsService(store=store)
+        results = service.backfill_gaps_in_recent_window(today=today)
+
+        assert all(r == "no_source_data" for r in results.values())
+        assert set(results) == set(ETF_REGISTRY)
+
+    def test_handles_mixed_symbol_states(
+        self, store: ConstituentsStore
+    ):
+        from app.services.constituents_fetcher import ETF_REGISTRY
+
+        symbols = list(ETF_REGISTRY)
+        sym_full, sym_gap, sym_no_history = symbols[0], symbols[1], symbols[2]
+
+        today = date(2026, 8, 13)
+        for offset in range(1, 8):
+            self._write(store, sym_full, today - timedelta(days=offset), [f"F-{offset}"])
+
+        # sym_gap: 7 days of gaps, but an older source exists
+        self._write(store, sym_gap, today - timedelta(days=20), ["SOURCE"])
+
+        # sym_no_history: nothing at all
+        service = ConstituentsService(store=store)
+        results = service.backfill_gaps_in_recent_window(today=today)
+
+        assert results[sym_full] == "already_present"
+        assert results[sym_gap] == "backfilled:7_gaps"
+        assert results[sym_no_history] == "no_source_data"
+
+    def test_is_idempotent(
+        self, store: ConstituentsStore
+    ):
+        """Running the scan twice in a row produces the same end state
+        and the second call reports everything as already_present."""
+        from app.services.constituents_fetcher import ETF_REGISTRY
+
+        today = date(2026, 8, 13)
+        for symbol in ETF_REGISTRY:
+            self._write(store, symbol, today - timedelta(days=20), ["BASE"])
+
+        service = ConstituentsService(store=store)
+        first = service.backfill_gaps_in_recent_window(today=today)
+        second = service.backfill_gaps_in_recent_window(today=today)
+
+        assert all(r == "backfilled:7_gaps" for r in first.values())
+        assert all(r == "already_present" for r in second.values())
+
+    def test_uses_ny_date_when_today_omitted(
+        self, store: ConstituentsStore, monkeypatch: pytest.MonkeyPatch
+    ):
+        fixed_today = date(2026, 8, 13)
+        for offset in range(1, 8):
+            store.write_snapshot("SPY", fixed_today - timedelta(days=offset), [f"DAY-{offset}"])
+
+        class _FakeSettings:
+            @staticmethod
+            def now_ny_date():
+                return fixed_today
+
+        from app.services import constituents_service as svc_module
+        monkeypatch.setattr(svc_module, "get_settings", _FakeSettings)
+
+        service = ConstituentsService(store=store)
+        results = service.backfill_gaps_in_recent_window()
+
+        assert results["SPY"] == "already_present"
+
+    def test_scheduler_shim_routes_to_gap_scan(
+        self, store: ConstituentsStore
+    ):
+        """The legacy backfill_missing_t1_from_t2 entry point still
+        works (the scheduler calls it)."""
+        from app.services.constituents_fetcher import ETF_REGISTRY
+
+        today = date(2026, 8, 13)
+        for symbol in ETF_REGISTRY:
+            self._write(store, symbol, today - timedelta(days=5), ["PREV"])
+
+        service = ConstituentsService(store=store)
+        results = service.backfill_missing_t1_from_t2(today=today)
+
+        # The window covers T-1..T-7. The anchor at T-5 fills T-5..T-1
+        # (4 dates), but T-6 and T-7 have no source and stay empty.
+        # The action string reports only the count of successful fills.
+        assert all(r == "backfilled:4_gaps" for r in results.values())
