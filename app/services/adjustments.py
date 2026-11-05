@@ -12,10 +12,11 @@ Back-adjustment anchors the series to the latest bar: every bar strictly
     dividend  ``1 - cash_amount / previous_close`` for prices only
 
 A dividend's factor is sized off the previous trading day's close in
-*today's* basis (split-adjusted, and already scaled by any later
-dividends), mirroring the CRSP convention. ``cash_amount`` is therefore
-taken from Polygon's ``split_adjusted_cash_amount`` when available, so
-cash and price are expressed in the same share basis.
+split-adjusted basis. ``cash_amount`` is taken from Polygon's
+``split_adjusted_cash_amount`` when available, so cash and price are
+expressed in the same share basis. Each dividend is sized independently —
+no dividend is scaled by another — which keeps the adjusted series
+consistent with the true total return.
 """
 from __future__ import annotations
 
@@ -31,6 +32,25 @@ SPLIT = "split"
 DIVIDEND = "dividend"
 
 PRICE_COLUMNS = ("open", "high", "low", "close")
+
+#: ``distribution_type`` values on Polygon's current ``/stocks/v1/dividends``
+#: endpoint. They describe how often a distribution recurs, not what kind
+#: of payout it is — every one of them is cash.
+_CASH_DISTRIBUTION_TYPES = frozenset({
+    "recurring",
+    "special",
+    "supplemental",
+    "irregular",
+    "unknown",
+    # Legacy alias some payloads still carry in this field.
+    "CD",
+})
+
+#: ``dividend_type`` values on the deprecated ``/v3/reference/dividends``
+#: endpoint. ``CD`` (regular) and ``SC`` (special cash) are cash payouts;
+#: ``LT`` / ``ST`` are capital-gain distributions, which don't move the
+#: price series.
+_CASH_DIVIDEND_TYPES = frozenset({"CD", "SC"})
 
 
 def split_action(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -56,10 +76,24 @@ def split_action(payload: dict[str, Any]) -> dict[str, Any] | None:
 
 def dividend_action(payload: dict[str, Any]) -> dict[str, Any] | None:
     """Normalise a Polygon ``/stocks/v1/dividends`` row; ``None`` if unusable."""
-    # Only cash dividends move the price series; stock dividends already
-    # show up as splits and capital-gain distributions are not dividends.
+    # Polygon has two dividend shapes in the wild:
+    #
+    # * ``/stocks/v1/dividends`` (current) reports ``distribution_type``
+    #   describing the *recurrence* of the distribution — ``recurring``,
+    #   ``special``, ``supplemental``, ``irregular``, ``unknown`` — and
+    #   only ever carries cash distributions.
+    # * ``/v3/reference/dividends`` (deprecated) reported ``dividend_type``
+    #   instead, classifying the payout: ``CD`` / ``SC`` are cash,
+    #   ``LT`` / ``ST`` are capital gains.
+    #
+    # Only cash moves the price series; stock dividends already show up as
+    # splits and capital-gain distributions are not dividends.
+    legacy_type = payload.get("dividend_type")
+    if legacy_type is not None and legacy_type not in _CASH_DIVIDEND_TYPES:
+        return None
+
     distribution = payload.get("distribution_type")
-    if distribution not in (None, "CD"):
+    if distribution is not None and distribution not in _CASH_DISTRIBUTION_TYPES:
         return None
 
     cash = payload.get("split_adjusted_cash_amount")
@@ -136,22 +170,24 @@ def _dividend_drops(
 ) -> list[tuple[date, float]]:
     """``(ex_date, price_multiplier)`` for each usable cash dividend.
 
-    Later dividends are processed first so ``cumulative`` carries the
-    product of every dividend that post-dates the one being sized.
+    Each dividend is sized off the prior close in *split-adjusted* basis
+    only. The earlier implementation multiplied that close by the product
+    of every dividend that post-dates this one, which double-counted those
+    later dividends and left the adjusted series slightly inconsistent with
+    the true total return.
     """
     dividends = sorted(
         (a for a in actions if a["kind"] == DIVIDEND), key=lambda a: a["date"]
     )
 
     drops: list[tuple[date, float]] = []
-    cumulative = 1.0
-    for dividend in reversed(dividends):
+    for dividend in dividends:
         index = bisect_left(bar_dates, dividend["date"]) - 1
         if index < 0:
             # No prior bar to size the drop against (ex-date precedes the
             # cached history); the bar series is already in the right basis.
             continue
-        previous_close = split_adjusted_closes[index] * cumulative
+        previous_close = split_adjusted_closes[index]
         if previous_close <= 0:
             continue
         multiplier = 1.0 - float(dividend["cash_amount"]) / previous_close
@@ -162,7 +198,6 @@ def _dividend_drops(
             )
             continue
         drops.append((dividend["date"], multiplier))
-        cumulative *= multiplier
     return drops
 
 
