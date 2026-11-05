@@ -138,12 +138,24 @@ class TestResponseHandling:
                 )
 
     async def test_raises_on_http_error(self, client: PolygonClient):
+        """HTTP failures surface as PolygonError so the API returns 502."""
         with patch.object(
             httpx.AsyncClient,
             "get",
             AsyncMock(return_value=_error_response(401)),
         ):
-            with pytest.raises(httpx.HTTPStatusError):
+            with pytest.raises(PolygonError, match="HTTP 401"):
+                await client.fetch_daily_bars(
+                    "AAPL", date(2026, 7, 1), date(2026, 7, 2)
+                )
+
+    async def test_raises_on_transport_error(self, client: PolygonClient):
+        with patch.object(
+            httpx.AsyncClient,
+            "get",
+            AsyncMock(side_effect=httpx.ConnectError("boom")),
+        ):
+            with pytest.raises(PolygonError, match="failed"):
                 await client.fetch_daily_bars(
                     "AAPL", date(2026, 7, 1), date(2026, 7, 2)
                 )
@@ -177,7 +189,55 @@ class TestPagination:
         assert captured[0][1]["adjusted"] == "false"
         # The second page carries its own query string — params are dropped.
         assert captured[1][0] == page2
-        assert captured[1][1] == {}
+        assert captured[1][1] is None
+
+    async def test_next_page_keeps_the_cursor_in_the_url(
+        self, client: PolygonClient
+    ):
+        """httpx replaces the query string when given ``params={}``.
+
+        Passing ``params=None`` is what preserves the ``cursor`` that
+        Polygon's ``next_url`` carries — otherwise page 1 is served again
+        and the pagination loop never terminates.
+        """
+        page2 = (
+            "https://api.polygon.io/v2/aggs/ticker/AAPL/range/1/day/x/y"
+            "?cursor=eyJvZmZzZXQiOjEyM30&limit=5000&sort=asc&adjusted=false"
+        )
+        requested: list[str] = []
+
+        async def fake_get(self, url, *, params=None, headers=None):
+            requested.append(url)
+            if len(requested) == 1:
+                return _ok_response(
+                    {"status": "OK", "results": [{"t": 1}], "next_url": page2}
+                )
+            return _ok_response({"status": "OK", "results": [{"t": 2}]})
+
+        with patch.object(httpx.AsyncClient, "get", fake_get):
+            result = await client.fetch_daily_bars(
+                "AAPL", date(2026, 7, 1), date(2026, 7, 2)
+            )
+
+        assert len(result) == 2
+        assert requested[1] == page2
+
+    async def test_repeated_next_url_raises_instead_of_looping(
+        self, client: PolygonClient
+    ):
+        """A server that keeps returning the same next_url must not hang."""
+        page2 = "https://api.polygon.io/v2/aggs/ticker/AAPL/range/1/day/x/y?cursor=same"
+
+        async def fake_get(self, url, *, params=None, headers=None):
+            return _ok_response(
+                {"status": "OK", "results": [{"t": 1}], "next_url": page2}
+            )
+
+        with patch.object(httpx.AsyncClient, "get", fake_get):
+            with pytest.raises(PolygonError, match="pagination loop"):
+                await client.fetch_daily_bars(
+                    "AAPL", date(2026, 7, 1), date(2026, 7, 2)
+                )
 
     async def test_stops_when_next_url_is_absent(self, client: PolygonClient):
         with patch.object(

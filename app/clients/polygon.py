@@ -85,7 +85,7 @@ class PolygonClient:
     async def _fetch_all(
         self,
         url: str,
-        params: dict[str, Any],
+        params: dict[str, Any] | None,
         ticker: str,
     ) -> list[dict[str, Any]]:
         """Page through a Polygon endpoint, concatenating ``results``."""
@@ -94,12 +94,31 @@ class PolygonClient:
 
         headers = {"Authorization": f"Bearer {self._settings.polygon_api_key}"}
         results: list[dict[str, Any]] = []
+        # Guards against a server that keeps handing back the same cursor.
+        seen_urls: set[str] = set()
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             while url:
+                if url in seen_urls:
+                    raise PolygonError(
+                        f"Polygon pagination loop detected for {ticker}: "
+                        f"{url} was already fetched"
+                    )
+                seen_urls.add(url)
+
                 log.info("Polygon GET %s", url)
-                resp = await client.get(url, params=params, headers=headers)
-                resp.raise_for_status()
+                try:
+                    resp = await client.get(url, params=params, headers=headers)
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    raise PolygonError(
+                        f"Polygon HTTP {e.response.status_code} for {ticker}: "
+                        f"{e.response.text}"
+                    ) from e
+                except httpx.HTTPError as e:
+                    raise PolygonError(
+                        f"Polygon request for {ticker} failed: {e}"
+                    ) from e
                 payload = resp.json()
 
                 status = payload.get("status")
@@ -114,9 +133,13 @@ class PolygonClient:
                 next_url = payload.get("next_url")
                 if next_url:
                     # The next page already carries its own query string
-                    # (including ``limit``), so params must not be resent.
+                    # (including the ``cursor``), so params must not be
+                    # resent. ``params=None`` — not ``{}`` — because httpx
+                    # *replaces* the query string when given an empty dict,
+                    # which would drop the cursor and make Polygon serve
+                    # page 1 again forever.
                     url = next_url
-                    params = {}
+                    params = None
                 else:
                     url = ""
 
