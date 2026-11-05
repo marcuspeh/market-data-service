@@ -225,6 +225,72 @@ class TestCachedExtent:
         assert store.cached_extent("AAPL", before=date(2025, 1, 1)) is None
 
 
+class TestCachedDates:
+    def test_returns_every_cached_date_in_window(self, store: MarketBarsStore):
+        store.write_bars("AAPL", [
+            _bar(_ts_for_ny(date(2024, 6, 1))),
+            _bar(_ts_for_ny(date(2024, 6, 3))),
+            _bar(_ts_for_ny(date(2024, 6, 5))),
+        ])
+
+        dates = store.cached_dates(
+            "AAPL", date(2024, 6, 1), date(2024, 6, 5)
+        )
+
+        assert dates == [date(2024, 6, 1), date(2024, 6, 3), date(2024, 6, 5)]
+
+    def test_excludes_dates_outside_the_window(self, store: MarketBarsStore):
+        store.write_bars("AAPL", [
+            _bar(_ts_for_ny(date(2024, 5, 31))),
+            _bar(_ts_for_ny(date(2024, 6, 1))),
+            _bar(_ts_for_ny(date(2024, 6, 2))),
+        ])
+
+        dates = store.cached_dates(
+            "AAPL", date(2024, 6, 1), date(2024, 6, 2)
+        )
+
+        assert dates == [date(2024, 6, 1), date(2024, 6, 2)]
+
+    def test_empty_for_unknown_ticker(self, store: MarketBarsStore):
+        assert store.cached_dates(
+            "NOPE", date(2024, 6, 1), date(2024, 6, 5)
+        ) == []
+
+
+class TestAtomicWrites:
+    def test_concurrent_writers_use_distinct_temp_files(
+        self, store: MarketBarsStore, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Two writers of the same ticker/year must not share a temp file.
+
+        A shared temp name lets one writer rename a partially written
+        file into place, corrupting the cache.
+        """
+        import app.services.parquet_io as parquet_io
+
+        seen: list[Path] = []
+        original = parquet_io.temp_path
+
+        def spy(target: Path) -> Path:
+            path = original(target)
+            seen.append(path)
+            return path
+
+        monkeypatch.setattr(parquet_io, "temp_path", spy)
+
+        store.write_bars("AAPL", [_bar(_ts_for_ny(date(2024, 6, 1)))])
+        store.write_bars("AAPL", [_bar(_ts_for_ny(date(2024, 6, 2)))])
+
+        assert len(seen) == 2
+        assert seen[0] != seen[1]
+
+    def test_no_temp_files_are_left_behind(self, store: MarketBarsStore):
+        store.write_bars("AAPL", [_bar(_ts_for_ny(date(2024, 6, 1)))])
+        leftovers = list(store.path_for("AAPL", 2024).parent.glob("*.tmp"))
+        assert leftovers == []
+
+
 class TestEnsureRawBasis:
     def test_fresh_cache_stamps_marker(self, store: MarketBarsStore):
         assert store.ensure_raw_basis() is False

@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Path, Query
 
 from app.clients.longbridge import LongbridgeError
 from app.clients.polygon import PolygonError
-from app.config.settings import get_settings
+from app.config.settings import Settings, get_settings
 from app.logging_setup import client
 from app.services.market_data_service import MarketDataService
 
@@ -28,7 +28,9 @@ async def get_market_data(
     ),
 ):
     if to is None:
-        to = date.today()
+        # "Today" is the US/Eastern calendar date, matching every other
+        # date decision the service makes.
+        to = Settings.now_ny_date()
 
     try:
         result = await _service.get_bars(

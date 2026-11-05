@@ -9,7 +9,7 @@ from typing import Any
 
 from longbridge.openapi import AdjustType, Config, Period, QuoteContext  # type: ignore[import-not-found]
 
-from app.config.settings import NY_TZ, Settings, ny_now
+from app.config.settings import NY_TZ, Settings, ny_from_ts, ny_now
 from app.logging_setup import client
 
 log = client()
@@ -47,9 +47,27 @@ class LongbridgeClient:
                     self._settings.longbridge_app_key,
                     self._settings.longbridge_app_secret,
                     self._settings.longbridge_access_token,
+                    http_url=self._http_url(),
                 )
             )
         return self._ctx
+
+    def _http_url(self) -> str | None:
+        """REST endpoint for the configured region.
+
+        The SDK resolves its endpoint from the ``LONGBRIDGE_REGION``
+        environment variable, but pydantic-settings loads ``.env`` into
+        the settings object only — it never exports to ``os.environ``.
+        The region is therefore translated to the endpoint URL here and
+        passed explicitly, so ``.env`` actually takes effect.
+
+        ``cn`` selects the mainland-China endpoints; everything else
+        uses the global endpoints.
+        """
+        region = (self._settings.longbridge_region or "").strip().lower()
+        if region == "cn":
+            return "https://openapi.longbridge.cn"
+        return None
 
     async def fetch_today_bar(self, ticker: str) -> dict[str, Any] | None:
         """Fetch today's single daily bar for ``ticker``; returns None if none yet."""
@@ -121,6 +139,21 @@ class LongbridgeClient:
             return None
         last = candles[-1]
         ts_ms = self._candle_ts_ms(last)
+
+        bar_date = ny_from_ts(ts_ms)
+        today = self._today_ny()
+        if bar_date != today:
+            # Before the open — and on weekends/holidays — the most recent
+            # completed daily candle belongs to an earlier session. That
+            # bar is already in the local cache, so reporting it here
+            # would duplicate the date and leave today's session missing.
+            log.info(
+                "Longbridge's latest daily bar for %s is %s, not %s; "
+                "no bar for the current session yet",
+                ticker, bar_date, today,
+            )
+            return None
+
         return {
             "t": ts_ms,
             "o": float(last.open),

@@ -44,6 +44,7 @@ import pandas as pd
 
 from app.config.settings import ny_from_ts
 from app.logging_setup import client
+from app.services.parquet_io import write_parquet_atomic
 
 log = client()
 
@@ -174,6 +175,31 @@ class MarketBarsStore:
             return None
         return first, last
 
+    def cached_dates(
+        self, ticker: str, start: date, end: date
+    ) -> list[date]:
+        """Every cached bar date in ``[start, end]``, ascending.
+
+        Only the ``date`` column is read. The list is what tells a caller
+        whether the cache *contiguously* covers a window — the extent
+        alone can't distinguish a full history from two disjoint spans.
+        """
+        if end < start:
+            return []
+
+        dates: set[date] = set()
+        for year in self._years_for_range(start, end):
+            path = self.path_for(ticker, year)
+            if not path.exists():
+                continue
+            df = pd.read_parquet(path, columns=[DATE_COL])
+            if df.empty:
+                continue
+            for value in pd.to_datetime(df[DATE_COL]).dt.date:
+                if start <= value <= end:
+                    dates.add(value)
+        return sorted(dates)
+
     def delete_ticker(self, ticker: str) -> int:
         """Remove every cached yearly file for ``ticker``.
 
@@ -276,9 +302,7 @@ class MarketBarsStore:
         combined[TIMESTAMP_COL] = combined[TIMESTAMP_COL].astype("int64")
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        combined.to_parquet(tmp, index=False, engine="pyarrow")
-        tmp.replace(path)
+        write_parquet_atomic(combined, path)
 
 
 def _bar_to_row(bar: dict[str, Any], ticker: str) -> dict[str, Any]:

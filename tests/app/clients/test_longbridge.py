@@ -51,9 +51,32 @@ class TestCredentials:
             fake_settings.longbridge_app_key,
             fake_settings.longbridge_app_secret,
             fake_settings.longbridge_access_token,
+            http_url=None,
         )
         qc.assert_called_once_with(config_cls.from_apikey.return_value)
         assert ctx is qc.return_value
+
+    def test_cn_region_selects_the_china_endpoint(
+        self, fake_settings: FakeSettings
+    ):
+        """``.env`` must be able to switch the SDK's endpoint region.
+
+        The SDK reads ``LONGBRIDGE_REGION`` from ``os.environ``, which
+        pydantic-settings never populates — so the region is translated
+        to the endpoint URL and passed explicitly.
+        """
+        fake_settings.longbridge_region = "cn"
+        client = LongbridgeClient(fake_settings)
+        client._ctx = None
+        with patch("app.clients.longbridge.Config") as config_cls:
+            config_cls.from_apikey.return_value = MagicMock()
+            with patch("app.clients.longbridge.QuoteContext") as qc:
+                client._ensure_ctx()
+
+        assert (
+            config_cls.from_apikey.call_args.kwargs["http_url"]
+            == "https://openapi.longbridge.cn"
+        )
 
     def test_ensure_ctx_is_cached(self, fake_settings: FakeSettings):
         client = LongbridgeClient(fake_settings)
@@ -310,7 +333,10 @@ class TestUncachedRequestShape:
             volume=18_306_516,
             turnover=5_954_824_475.316,
         )
-        candle.timestamp = datetime(2026, 9, 2, tzinfo=timezone.utc)
+        # Must be today's session or the client rejects it.
+        candle.timestamp = datetime.combine(
+            LongbridgeClient._today_ny(), datetime.min.time(), tzinfo=NY_TZ
+        ).astimezone(timezone.utc)
 
         client._ctx.candlesticks.return_value = [candle]
 
@@ -320,6 +346,27 @@ class TestUncachedRequestShape:
         assert result["v"] == 18_306_516.0
         assert result["vw"] is None
         assert result["n"] is None
+
+    async def test_bar_from_a_previous_session_is_rejected(
+        self, fake_settings: FakeSettings
+    ):
+        """Before the open, the last candle belongs to an earlier session.
+
+        Returning it would duplicate a date the cache already holds and
+        leave the current session missing.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        client = _make_client(fake_settings)
+        candle = MagicMock(open=1.0, high=2.0, low=0.5, close=1.5, volume=10, turnover=15)
+        yesterday = LongbridgeClient._today_ny() - timedelta(days=1)
+        candle.timestamp = datetime.combine(
+            yesterday, datetime.min.time(), tzinfo=NY_TZ
+        ).astimezone(timezone.utc)
+
+        client._ctx.candlesticks.return_value = [candle]
+
+        assert await client._fetch_today_bar_uncached("AAPL") is None
 
 
 class TestTodayNycTimezone:

@@ -17,6 +17,7 @@ an action dated after ``to`` does not rescale the response. Within the
 window itself the series is deterministic — the same raw bars and the
 same action records always produce the same numbers.
 """
+import time
 from datetime import date, timedelta
 from typing import Any
 
@@ -41,6 +42,19 @@ LOOKBACK = timedelta(days=10)
 #: Trailing window the daily backfill refreshes corporate actions over.
 ACTION_REFRESH_DAYS = 30
 
+#: Widest run of consecutive non-trading days in the US market calendar.
+#: The longest closure is the Christmas/New Year cluster (Dec 24-26 plus a
+#: weekend = 4 non-trading days), so two consecutive bars are never more
+#: than 5 calendar days apart. A wider span means real bars are missing
+#: and the range has to be refetched.
+MAX_CLOSURE_SPAN_DAYS = 5
+
+#: How long a corporate-action sync counts as fresh for a ticker. Actions
+#: are re-synced on every read because a split or dividend can be declared
+#: at any time; the TTL keeps a burst of requests from turning into a burst
+#: of upstream calls.
+ACTION_SYNC_TTL_SECONDS = 300.0
+
 
 class MarketDataService:
     def __init__(
@@ -59,6 +73,10 @@ class MarketDataService:
         self._polygon = polygon or PolygonClient(settings)
         self._longbridge = longbridge or LongbridgeClient(settings)
         self._store.ensure_raw_basis()
+        #: Monotonic timestamp of the last corporate-action sync per ticker.
+        self._action_synced_at: dict[str, float] = {}
+        #: The window each ticker's last action sync covered.
+        self._action_synced_window: dict[str, tuple[date, date]] = {}
 
     async def get_bars(
         self,
@@ -86,13 +104,24 @@ class MarketDataService:
             extent = self._store.cached_extent(ticker, before=today)
             backfill = self._backfill_window(cache_start, historical_end, extent)
 
+            if backfill is None and self._has_interior_gap(
+                ticker, cache_start, historical_end, extent
+            ):
+                # The cache holds disjoint spans — refetch the whole range
+                # so the hole is filled rather than served as an empty
+                # stretch of the response.
+                backfill = (cache_start, historical_end)
+
             if backfill is not None:
                 backfilled_bars = await self._backfill_bars(
                     ticker, backfill[0], backfill[1], today
                 )
-                # Every bar written is accompanied by its action records,
-                # so a bar's date is always covered by a synced window.
-                await self._sync_actions(ticker, cache_start, action_end)
+
+            # Corporate actions are refreshed independently of the bar
+            # backfill: a split or dividend can be declared at any time, so
+            # a warm cache must still pick it up. The TTL stops a burst of
+            # requests from turning into a burst of upstream calls.
+            await self._sync_actions(ticker, cache_start, action_end)
 
             cached = self._store.read_range(ticker, cache_start, historical_end)
             rows.extend(
@@ -110,12 +139,24 @@ class MarketDataService:
                 raise
 
             if today_bar is not None:
-                rows.append(
-                    {
-                        **self._normalize_today_bar(today_bar, ticker),
-                        "source": "longbridge",
-                    }
-                )
+                live_row = self._normalize_today_bar(today_bar, ticker)
+                if live_row["date"] != today:
+                    # The upstream's latest completed session isn't today's
+                    # (before the open, or on a weekend/holiday). That bar
+                    # is already in the cache, so serving it again would
+                    # duplicate the date and leave today missing.
+                    log.info(
+                        "Ignoring Longbridge bar for %s dated %s; "
+                        "today is %s",
+                        ticker, live_row["date"], today,
+                    )
+                elif any(row["date"] == today for row in rows):
+                    log.info(
+                        "Ignoring Longbridge bar for %s; %s is already cached",
+                        ticker, today,
+                    )
+                else:
+                    rows.append({**live_row, "source": "longbridge"})
             else:
                 log.info("Longbridge returned no bar for %s today", ticker)
 
@@ -210,11 +251,20 @@ class MarketDataService:
         actions_stored = self._actions.upsert(ticker, fetched)
 
         bars_written = 0
-        if last < historical_end:
+        if last < historical_end or self._has_interior_gap(
+            ticker, first, historical_end, extent
+        ):
             try:
-                bars_written = await self._backfill_bars(
-                    ticker, last + timedelta(days=1), historical_end, today
-                )
+                if last < historical_end:
+                    bars_written = await self._backfill_bars(
+                        ticker, last + timedelta(days=1), historical_end, today
+                    )
+                else:
+                    # The cache has disjoint spans; refetch the whole
+                    # covered window so the interior hole is filled.
+                    bars_written = await self._backfill_bars(
+                        ticker, first, historical_end, today
+                    )
             except PolygonError as e:
                 log.error("Polygon bar refresh for %s failed: %s", ticker, e)
                 return {
@@ -294,9 +344,30 @@ class MarketDataService:
         return actions
 
     async def _sync_actions(self, ticker: str, start: date, end: date) -> int:
-        """Refresh and persist corporate actions for ``start..end``."""
+        """Refresh and persist corporate actions for ``start..end``.
+
+        Skipped when a sync covering the same window ran within
+        :data:`ACTION_SYNC_TTL_SECONDS`, so a burst of reads doesn't turn
+        into a burst of upstream calls. A request for a *wider* window
+        always syncs — the cached window wouldn't cover it.
+        """
+        if end < start:
+            return 0
+
+        now = time.monotonic()
+        last = self._action_synced_at.get(ticker)
+        if (
+            last is not None
+            and now - last < ACTION_SYNC_TTL_SECONDS
+            and self._action_synced_window.get(ticker) == (start, end)
+        ):
+            return 0
+
         actions = await self._fetch_actions(ticker, start, end)
-        return self._actions.upsert(ticker, actions)
+        stored = self._actions.upsert(ticker, actions)
+        self._action_synced_at[ticker] = now
+        self._action_synced_window[ticker] = (start, end)
+        return stored
 
     @staticmethod
     def _backfill_window(
@@ -320,6 +391,29 @@ class MarketDataService:
         if last < end:
             return (max(start, last + timedelta(days=1)), end)
         return None
+
+    def _has_interior_gap(
+        self, ticker: str, start: date, end: date, extent: tuple[date, date] | None
+    ) -> bool:
+        """True when the cached bars don't continuously cover ``start..end``.
+
+        A genuine market closure never spans more than
+        :data:`MAX_CLOSURE_SPAN_DAYS` calendar days, so a wider gap
+        between two consecutive cached bars means bars are missing — the
+        cache holds two disjoint spans rather than one history.
+        """
+        if extent is None:
+            return False
+
+        cached = self._store.cached_dates(ticker, start, end)
+        if len(cached) < 2:
+            # Fewer than two bars can't have an interior gap.
+            return False
+
+        for previous, current in zip(cached, cached[1:]):
+            if (current - previous).days > MAX_CLOSURE_SPAN_DAYS:
+                return True
+        return False
 
     @staticmethod
     def _bar_date_ny(bar: dict[str, Any]) -> date:

@@ -64,6 +64,7 @@ class FakeSettings:
     longbridge_access_token: str = "test-access-token"
     longbridge_timeout_seconds: float = 5.0
     longbridge_region_suffix: str = ".US"
+    longbridge_region: str = "us"
     data_dir: str = "./data"
 
     @property
