@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     longbridge_access_token: str = Field(default="")
     longbridge_timeout_seconds: float = Field(default=10.0)
     longbridge_region_suffix: str = Field(default=".US")
+    # OpenAPI endpoint region: "us" (default), "hk" or "cn". The SDK picks
+    # by your location, which is wrong when the service runs on a host in
+    # a different region — set this explicitly in that case.
+    longbridge_region: str = Field(default="us")
 
     # Logging SDK (logging_system). The project name is used as the
     # Kafka message key, so the logging collector partitions all events

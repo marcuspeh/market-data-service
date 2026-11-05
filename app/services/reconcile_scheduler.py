@@ -16,21 +16,12 @@ scheduler in its lifespan and shuts it down on exit.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-
-try:
-    from zoneinfo import ZoneInfo  # type: ignore[import-not-found]
-
-    NY_TZ = ZoneInfo("America/New_York")
-except ImportError:  # pragma: no cover — only on Python <3.9
-    from datetime import timezone
-
-    NY_TZ = timezone(timedelta(hours=-5), name="America/New_York")
+from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app.config.settings import get_settings
+from app.config.settings import NY_TZ, get_settings
 from app.logging_setup import client
 from app.services.market_data_service import MarketDataService
 

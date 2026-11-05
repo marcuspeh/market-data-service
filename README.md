@@ -75,7 +75,7 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
 The app talks to Longbridge over the public internet; nothing else to
-start. ``LONGBRIDGE_REGION`` (``hk`` / ``cn``) is optional and only
+start. ``LONGBRIDGE_REGION`` (``us`` / ``cn``) is optional and only
 needed if the SDK's auto-pick is wrong for your location.
 
 ### Option B — Docker Compose (recommended)
@@ -114,7 +114,7 @@ All settings come from environment variables (or a `.env` file via
 | `LONGBRIDGE_APP_SECRET` | _empty_ | Longbridge OpenAPI app secret |
 | `LONGBRIDGE_ACCESS_TOKEN` | _empty_ | Longbridge OpenAPI legacy access token |
 | `LONGBRIDGE_TIMEOUT_SECONDS` | `10` | Request timeout for the Longbridge client |
-| `LONGBRIDGE_REGION` | _(auto)_ | `hk` or `cn` if the SDK picks the wrong endpoint |
+| `LONGBRIDGE_REGION` | `us` | Longbridge endpoint region: `us` or `cn` (mainland-China endpoints) |
 | `LONGBRIDGE_REGION_SUFFIX` | `.US` | Suffix appended to bare tickers (e.g. `AAPL` → `AAPL.US`) |
 | `APP_PORT` | `3556` | Host port the FastAPI app listens on |
 
@@ -153,8 +153,8 @@ for the requested date, returns **404**.
 | `date` | `date32` | Snapshot date |
 | `ticker` | `string` | The constituent's ticker |
 
-The ETF ticker itself is not stored as a column — it's the filename
-(`SPY.parquet`, `QQQ.parquet`, `IWM.parquet`).
+The ETF ticker and the year are not stored as columns — they're the
+path (`constituents/SPY/2026.parquet`).
 
 | Symbol | Provider | Source |
 | --- | --- | --- |
@@ -271,8 +271,9 @@ on each request:
   inverse, for every bar strictly before the execution date.
 - **Cash dividends** scale prices (not volume) by `1 - D / P_prev`, for
   every bar strictly before the ex-dividend date. `D` is Polygon's
-  `split_adjusted_cash_amount`, and only `distribution_type == "CD"`
-  rows are used.
+  `split_adjusted_cash_amount`; `P_prev` is the previous close in
+  split-adjusted basis. Each dividend is sized independently, so the
+  adjusted series stays consistent with the true total return.
 
 The series is anchored at the last bar of the requested window, so an
 action dated after `to` does not rescale the response and the same raw
@@ -284,6 +285,12 @@ every Saturday at 12:00 PM America/New_York and, per cached ticker,
 merges newly published actions and fills any trading days missing after
 the newest cached bar. `backfill_yesterday` also refreshes the trailing
 30 days of actions on each normal backfill.
+
+Corporate actions are re-synced on every read (throttled to once per
+ticker per 5 minutes), so a newly declared split or dividend is picked up
+without waiting for the weekly job. A gap inside the cached history — two
+disjoint spans rather than one continuous range — is refetched from Polygon
+instead of being served as an empty stretch of the response.
 
 `data/market/.price_basis` records the basis version; the first start
 after an upgrade from split-adjusted storage wipes the old cache once.

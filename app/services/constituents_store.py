@@ -26,6 +26,7 @@ from typing import Any
 import pandas as pd
 
 from app.logging_setup import client
+from app.services.parquet_io import write_parquet_atomic
 
 log = client()
 
@@ -134,7 +135,20 @@ class ConstituentsStore:
         tickers: list[str],
     ) -> None:
         """Append (or replace) a snapshot row-group into the ticker's
-        ``<year>.parquet`` file."""
+        ``<year>.parquet`` file.
+
+        An empty ``tickers`` list is a no-op: upstream can serve an error
+        page or an empty holdings file, and replacing a good snapshot with
+        zero rows would turn a previously served date into a 404.
+        """
+        if not tickers:
+            log.warn(
+                "Skipping empty constituents snapshot for %s on %s; "
+                "keeping any existing rows",
+                symbol.upper(), snapshot_date,
+            )
+            return
+
         year = snapshot_date.year
         path = self.path_for(symbol, year)
         new_rows = pd.DataFrame(
@@ -156,9 +170,7 @@ class ConstituentsStore:
         )
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        combined.to_parquet(tmp, index=False, engine="pyarrow")
-        tmp.replace(path)  # atomic on POSIX
+        write_parquet_atomic(combined, path)
 
         log.info(
             "Wrote %d rows for %s on %s -> %s",

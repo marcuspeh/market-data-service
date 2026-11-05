@@ -14,19 +14,10 @@ holidays). The job:
 """
 from datetime import datetime, time, timedelta
 
-try:
-    from zoneinfo import ZoneInfo  # type: ignore[import-not-found]
-
-    NY_TZ = ZoneInfo("America/New_York")
-except ImportError:  # pragma: no cover — only on Python <3.9
-    from datetime import timezone
-
-    NY_TZ = timezone(timedelta(hours=-5), name="America/New_York")
-
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 
-from app.config.settings import get_settings
+from app.config.settings import NY_TZ, get_settings
 from app.logging_setup import client
 from app.services.constituents_service import ConstituentsService
 from app.services.market_data_service import MarketDataService

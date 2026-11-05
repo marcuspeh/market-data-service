@@ -155,7 +155,6 @@ class ConstituentsService:
                     continue
 
                 filled = 0
-                no_source = False
                 for gap_date in missing:
                     source = self._find_prior_snapshot(symbol, gap_date)
                     if source is None:
@@ -163,7 +162,6 @@ class ConstituentsService:
                             "Cannot backfill %s for %s: no prior snapshot",
                             symbol, gap_date,
                         )
-                        no_source = True
                         continue
                     source_date, tickers = source
                     self._store.write_snapshot(symbol, gap_date, tickers)
@@ -175,11 +173,10 @@ class ConstituentsService:
 
                 if filled == 0:
                     results[symbol] = "no_source_data"
-                elif no_source:
-                    # Some gaps were filled but at least one was not —
-                    # surface the partial state.
-                    results[symbol] = f"backfilled:{filled}_gaps"
                 else:
+                    # Some gaps may have been left unfilled (no prior
+                    # snapshot to copy from); the count reports what was
+                    # actually restored.
                     results[symbol] = f"backfilled:{filled}_gaps"
             except Exception as e:  # noqa: BLE001 — best-effort backfill
                 log.error("Backfill failed for %s: %s", symbol, e)

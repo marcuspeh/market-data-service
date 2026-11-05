@@ -27,6 +27,7 @@ from typing import Any
 import pandas as pd
 
 from app.logging_setup import client
+from app.services.parquet_io import write_parquet_atomic
 
 log = client()
 
@@ -114,9 +115,7 @@ class CorporateActionsStore:
         )
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        out.to_parquet(tmp, index=False, engine="pyarrow")
-        tmp.replace(path)
+        write_parquet_atomic(out, path)
 
         log.info(
             "Stored %d corporate action record(s) for %s",

@@ -87,6 +87,18 @@ class TestWriteRead:
         store.write_snapshot("SPY", date(2026, 8, 12), ["GOOG"])
         assert store.read_snapshot("SPY", date(2026, 8, 12)) == ["GOOG"]
 
+    def test_empty_write_does_not_erase_an_existing_snapshot(
+        self, store: ConstituentsStore
+    ):
+        """Upstream can serve an empty file; the good snapshot must survive."""
+        store.write_snapshot("SPY", date(2026, 8, 12), ["NVDA", "AAPL"])
+        store.write_snapshot("SPY", date(2026, 8, 12), [])
+        assert store.read_snapshot("SPY", date(2026, 8, 12)) == ["NVDA", "AAPL"]
+
+    def test_empty_write_creates_no_file(self, store: ConstituentsStore):
+        store.write_snapshot("SPY", date(2026, 8, 12), [])
+        assert not store.path_for("SPY", 2026).exists()
+
     def test_read_missing_date_raises(self, store: ConstituentsStore):
         store.write_snapshot("SPY", date(2026, 8, 11), ["NVDA"])
         with pytest.raises(ConstituentsNotFoundError):
