@@ -39,6 +39,13 @@ def _ts_for_ny(d: date) -> int:
     )
 
 
+def _bar_with_close(timestamp: int, close: float) -> dict:
+    """A bar with a specific close price."""
+    bar = _bar(timestamp)
+    bar["c"] = close
+    return bar
+
+
 @pytest.fixture
 def store(tmp_path: Path) -> MarketBarsStore:
     return MarketBarsStore(tmp_path / "market")
@@ -164,3 +171,96 @@ class TestTimezoneSemantics:
         result = store.read_range("AAPL", date(2026, 8, 21), date(2026, 8, 21))
         assert len(result) == 1
         assert result[0]["date"] == date(2026, 8, 21)
+
+
+class TestListTickers:
+    def test_empty_when_no_data(self, store: MarketBarsStore):
+        assert store.list_tickers() == []
+
+    def test_lists_tickers_with_cached_files(self, store: MarketBarsStore):
+        store.write_bars("AAPL", [_bar(_ts_for_ny(date(2024, 6, 1)))])
+        store.write_bars("MSFT", [_bar(_ts_for_ny(date(2025, 6, 1)))])
+        assert store.list_tickers() == ["AAPL", "MSFT"]
+
+    def test_ignores_directories_without_parquet(self, store: MarketBarsStore):
+        store.write_bars("AAPL", [_bar(_ts_for_ny(date(2024, 6, 1)))])
+        (store._base_dir / "EMPTY").mkdir(parents=True, exist_ok=True)
+        assert store.list_tickers() == ["AAPL"]
+
+
+class TestCachedExtent:
+    def test_none_when_no_rows(self, store: MarketBarsStore):
+        assert store.cached_extent("AAPL") is None
+
+    def test_returns_first_and_last_date(self, store: MarketBarsStore):
+        store.write_bars("AAPL", [
+            _bar_with_close(_ts_for_ny(date(2024, 6, 3)), 100.0),
+            _bar_with_close(_ts_for_ny(date(2024, 6, 1)), 120.0),
+        ])
+        store.write_bars("AAPL", [
+            _bar_with_close(_ts_for_ny(date(2025, 6, 1)), 90.0),
+        ])
+
+        first, last = store.cached_extent("AAPL")
+
+        assert first == date(2024, 6, 1)
+        assert last == date(2025, 6, 1)
+
+    def test_before_excludes_later_dates(self, store: MarketBarsStore):
+        store.write_bars("AAPL", [
+            _bar_with_close(_ts_for_ny(date(2024, 6, 1)), 100.0),
+            _bar_with_close(_ts_for_ny(date(2025, 6, 1)), 500.0),
+        ])
+
+        first, last = store.cached_extent("AAPL", before=date(2025, 1, 1))
+
+        assert first == date(2024, 6, 1)
+        assert last == date(2024, 6, 1)
+
+    def test_before_excludes_everything(self, store: MarketBarsStore):
+        store.write_bars("AAPL", [
+            _bar_with_close(_ts_for_ny(date(2025, 6, 1)), 500.0),
+        ])
+
+        assert store.cached_extent("AAPL", before=date(2025, 1, 1)) is None
+
+
+class TestEnsureRawBasis:
+    def test_fresh_cache_stamps_marker(self, store: MarketBarsStore):
+        assert store.ensure_raw_basis() is False
+        assert (store._base_dir / ".price_basis").read_text() == "raw"
+
+    def test_wipes_legacy_basis_once(self, store: MarketBarsStore):
+        store.write_bars("AAPL", [_bar(_ts_for_ny(date(2024, 6, 1)))])
+        assert store.list_tickers() == ["AAPL"]
+
+        assert store.ensure_raw_basis() is True
+        assert store.list_tickers() == []
+
+        # Second call is a no-op: the marker now records the raw basis.
+        assert store.ensure_raw_basis() is False
+        assert store.list_tickers() == []
+
+    def test_keeps_cache_written_in_raw_basis(self, store: MarketBarsStore):
+        store.ensure_raw_basis()
+        store.write_bars("AAPL", [_bar(_ts_for_ny(date(2024, 6, 1)))])
+
+        assert store.ensure_raw_basis() is False
+        assert store.list_tickers() == ["AAPL"]
+
+
+class TestDeleteTicker:
+    def test_returns_zero_for_unknown_ticker(self, store: MarketBarsStore):
+        assert store.delete_ticker("AAPL") == 0
+
+    def test_deletes_all_years(self, store: MarketBarsStore):
+        store.write_bars("AAPL", [_bar(_ts_for_ny(date(2024, 6, 1)))])
+        store.write_bars("AAPL", [_bar(_ts_for_ny(date(2025, 6, 1)))])
+        store.write_bars("MSFT", [_bar(_ts_for_ny(date(2025, 6, 1)))])
+
+        removed = store.delete_ticker("AAPL")
+
+        assert removed == 2
+        assert store.list_years("AAPL") == []
+        # Other tickers are untouched.
+        assert store.list_years("MSFT") == [2025]

@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -63,6 +64,15 @@ class FakeSettings:
     longbridge_access_token: str = "test-access-token"
     longbridge_timeout_seconds: float = 5.0
     longbridge_region_suffix: str = ".US"
+    data_dir: str = "./data"
+
+    @property
+    def market_data_dir(self) -> Path:
+        return Path(self.data_dir) / "market"
+
+    @property
+    def corporate_actions_dir(self) -> Path:
+        return Path(self.data_dir) / "corporate_actions"
 
 
 @pytest.fixture

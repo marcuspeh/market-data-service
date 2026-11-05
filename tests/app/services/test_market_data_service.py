@@ -1,4 +1,4 @@
-"""Tests for MarketDataService orchestration against a real MarketBarsStore."""
+"""Tests for MarketDataService orchestration against real parquet stores."""
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
@@ -11,8 +11,9 @@ import pytest
 from app.clients.longbridge import LongbridgeError
 from app.clients.polygon import PolygonError
 from app.config.settings import NY_TZ, Settings
-from app.services.market_data_service import MarketDataService
+from app.services.corporate_actions_store import CorporateActionsStore
 from app.services.market_bars_store import MarketBarsStore
+from app.services.market_data_service import LOOKBACK, MarketDataService
 from tests.conftest import FakeSettings
 
 
@@ -34,6 +35,14 @@ def _longbridge_bar(timestamp: int) -> dict[str, Any]:
     return _polygon_bar(timestamp)
 
 
+def _bar(d: date, close: float = 100.0, volume: float = 1000.0) -> dict[str, Any]:
+    """A Polygon-shaped bar dated ``d`` with a chosen close/volume."""
+    bar = _polygon_bar(_ts_for_ny(d))
+    bar["c"] = close
+    bar["v"] = volume
+    return bar
+
+
 def _ts_for_ny(date_: date) -> int:
     """Epoch-ms whose NY date is ``date_`` (23:30 ET keeps CI TZ honest)."""
     return int(
@@ -44,21 +53,54 @@ def _ts_for_ny(date_: date) -> int:
     )
 
 
+def _split(d: date, split_from: float, split_to: float) -> dict[str, Any]:
+    return {
+        "date": d,
+        "kind": "split",
+        "split_from": split_from,
+        "split_to": split_to,
+        "cash_amount": None,
+    }
+
+
+def _dividend(d: date, cash: float) -> dict[str, Any]:
+    return {
+        "date": d,
+        "kind": "dividend",
+        "split_from": None,
+        "split_to": None,
+        "cash_amount": cash,
+    }
+
+
 @pytest.fixture
 def store(tmp_path: Path) -> MarketBarsStore:
     return MarketBarsStore(tmp_path / "market")
 
 
 @pytest.fixture
+def actions_store(tmp_path: Path) -> CorporateActionsStore:
+    return CorporateActionsStore(tmp_path / "corporate_actions")
+
+
+@pytest.fixture
 def service(
-    fake_settings: FakeSettings, store: MarketBarsStore
+    fake_settings: FakeSettings,
+    store: MarketBarsStore,
+    actions_store: CorporateActionsStore,
 ) -> MarketDataService:
     polygon = MagicMock()
     longbridge = MagicMock()
     polygon.fetch_daily_bars = AsyncMock(return_value=[])
+    polygon.fetch_splits = AsyncMock(return_value=[])
+    polygon.fetch_dividends = AsyncMock(return_value=[])
     longbridge.fetch_today_bar = AsyncMock(return_value=None)
     return MarketDataService(
-        fake_settings, store=store, polygon=polygon, longbridge=longbridge
+        fake_settings,
+        store=store,
+        actions_store=actions_store,
+        polygon=polygon,
+        longbridge=longbridge,
     )
 
 
@@ -88,13 +130,21 @@ class TestHistoricalOnly:
         end = today - timedelta(days=1)
         start = end - timedelta(days=4)
 
-        for d in range(1, 6):
-            d_ = end - timedelta(days=d - 1)
-            store.write_bars("AAPL", [_polygon_bar(_ts_for_ny(d_))])
+        # The cache must cover the request *and* the dividend lookback.
+        cache_start = start - LOOKBACK
+        store.write_bars(
+            "AAPL",
+            [
+                _bar(cache_start + timedelta(days=i))
+                for i in range((end - cache_start).days + 1)
+            ],
+        )
 
         result = await service.get_bars("AAPL", start, end)
         service._polygon.fetch_daily_bars.assert_not_called()
+        service._polygon.fetch_splits.assert_not_called()
         assert all(b["source"] == "cache" for b in result["bars"])
+        assert result["backfilled_bars"] == 0
 
     async def test_backfills_from_polygon_for_missing_dates(
         self, service: MarketDataService, store: MarketBarsStore, today: date
@@ -104,7 +154,7 @@ class TestHistoricalOnly:
 
         service._polygon.fetch_daily_bars = AsyncMock(
             return_value=[
-                _polygon_bar(_ts_for_ny(end - timedelta(days=i))) for i in range(6)
+                _bar(end - timedelta(days=i)) for i in range(6)
             ]
         )
 
@@ -115,26 +165,55 @@ class TestHistoricalOnly:
         cached = store.read_range("AAPL", start, end)
         assert len(cached) == 6
 
-    async def test_backfill_window_uses_min_max_of_missing_dates(
+    async def test_asks_polygon_for_the_dividend_lookback(
         self, service: MarketDataService, today: date
     ):
-        """Only ask Polygon for the smallest covering range of missing dates."""
+        """An empty cache triggers one fetch covering lookback + window."""
         end = today - timedelta(days=1)
-        start = end - timedelta(days=9)
-
-        # Days 0,1,2,3,6,7,8,9 cached; days 4,5 missing.
-        service._polygon.fetch_daily_bars = AsyncMock(return_value=[])
-        service._store.write_bars("AAPL", [
-            _polygon_bar(_ts_for_ny(end - timedelta(days=d))) for d in [0, 1, 2, 3, 6, 7, 8, 9]
-        ])
-        service._polygon.fetch_daily_bars.reset_mock()
+        start = end - timedelta(days=4)
 
         await service.get_bars("AAPL", start, end)
 
         args = service._polygon.fetch_daily_bars.call_args.args
-        assert args[0] == "AAPL"
-        assert args[1] == start + timedelta(days=4)
-        assert args[2] == start + timedelta(days=5)
+        assert args == ("AAPL", start - LOOKBACK, end)
+
+
+class TestBackfillWindow:
+    def test_none_extent_covers_request(self):
+        start, end = date(2025, 1, 1), date(2025, 3, 1)
+        assert MarketDataService._backfill_window(start, end, None) == (start, end)
+
+    def test_fully_cached_window_needs_no_fetch(self):
+        start, end = date(2025, 1, 1), date(2025, 3, 1)
+        extent = (date(2024, 12, 1), date(2025, 4, 1))
+        assert MarketDataService._backfill_window(start, end, extent) is None
+
+    def test_extends_left_only(self):
+        start, end = date(2025, 1, 1), date(2025, 3, 1)
+        extent = (date(2025, 1, 15), date(2025, 4, 1))
+        assert MarketDataService._backfill_window(start, end, extent) == (
+            start,
+            date(2025, 1, 14),
+        )
+
+    def test_extends_right_only(self):
+        start, end = date(2025, 1, 1), date(2025, 3, 1)
+        extent = (date(2024, 12, 1), date(2025, 2, 1))
+        assert MarketDataService._backfill_window(start, end, extent) == (
+            date(2025, 2, 2),
+            end,
+        )
+
+    def test_extends_both_when_cache_is_interior(self):
+        start, end = date(2025, 1, 1), date(2025, 3, 1)
+        extent = (date(2025, 1, 20), date(2025, 2, 1))
+        assert MarketDataService._backfill_window(start, end, extent) == (start, end)
+
+    def test_interior_holes_are_not_refetched(self):
+        """A gap inside the cached extent is a non-trading day, not a hole."""
+        start, end = date(2025, 1, 1), date(2025, 3, 1)
+        extent = (start, end)
+        assert MarketDataService._backfill_window(start, end, extent) is None
 
 
 class TestToday:
@@ -186,7 +265,10 @@ class TestToday:
         end = today - timedelta(days=2)
         store.write_bars(
             "AAPL",
-            [_polygon_bar(_ts_for_ny(end)), _polygon_bar(_ts_for_ny(end - timedelta(days=1)))],
+            [
+                _polygon_bar(_ts_for_ny(end)),
+                _polygon_bar(_ts_for_ny(end - timedelta(days=1))),
+            ],
         )
         service._longbridge.fetch_today_bar = AsyncMock(
             return_value=_longbridge_bar(_ts_for_ny(today))
@@ -263,6 +345,133 @@ class TestPolygonBackfillGuards:
         assert any(b["source"] == "longbridge" for b in result["bars"])
 
 
+class TestAdjustmentsOnRead:
+    async def test_split_scales_bars_before_execution_date(
+        self,
+        service: MarketDataService,
+        store: MarketBarsStore,
+        actions_store: CorporateActionsStore,
+        today: date,
+    ):
+        end = today - timedelta(days=1)
+        start = end - timedelta(days=4)
+        store.write_bars(
+            "AAPL", [_bar(start + timedelta(days=i), close=200.0) for i in range(5)]
+        )
+        actions_store.upsert("AAPL", [_split(start + timedelta(days=2), 1.0, 2.0)])
+
+        result = await service.get_bars("AAPL", start, end)
+        bars = {b["date"]: b for b in result["bars"]}
+
+        # 2-for-1: everything before the execution date halves.
+        assert bars[start]["close"] == pytest.approx(100.0)
+        assert bars[start + timedelta(days=1)]["close"] == pytest.approx(100.0)
+        assert bars[start]["volume"] == pytest.approx(2000.0)
+        # The execution date itself is already in the new basis.
+        assert bars[start + timedelta(days=2)]["close"] == pytest.approx(200.0)
+        assert bars[start + timedelta(days=2)]["volume"] == pytest.approx(1000.0)
+
+    async def test_dividend_scales_bars_before_ex_date(
+        self,
+        service: MarketDataService,
+        store: MarketBarsStore,
+        actions_store: CorporateActionsStore,
+        today: date,
+    ):
+        end = today - timedelta(days=1)
+        start = end - timedelta(days=4)
+        store.write_bars(
+            "AAPL", [_bar(start + timedelta(days=i), close=100.0) for i in range(5)]
+        )
+        actions_store.upsert(
+            "AAPL", [_dividend(start + timedelta(days=2), 2.0)]
+        )
+
+        result = await service.get_bars("AAPL", start, end)
+        bars = {b["date"]: b for b in result["bars"]}
+
+        # Prior close 100, cash 2 → factor 0.98 on everything before the ex-date.
+        assert bars[start]["close"] == pytest.approx(98.0)
+        assert bars[start + timedelta(days=1)]["close"] == pytest.approx(98.0)
+        assert bars[start + timedelta(days=2)]["close"] == pytest.approx(100.0)
+        # Cash dividends never touch volume.
+        assert bars[start]["volume"] == pytest.approx(1000.0)
+
+    async def test_raw_prices_are_stored_unadjusted(
+        self,
+        service: MarketDataService,
+        store: MarketBarsStore,
+        today: date,
+    ):
+        """The cache keeps vendor prices; only the response is adjusted."""
+        end = today - timedelta(days=1)
+        start = end - timedelta(days=2)
+        service._polygon.fetch_daily_bars = AsyncMock(
+            return_value=[
+                _bar(start + timedelta(days=i), close=200.0) for i in range(3)
+            ]
+        )
+        service._polygon.fetch_splits = AsyncMock(
+            return_value=[
+                {
+                    "execution_date": (start + timedelta(days=1)).isoformat(),
+                    "split_from": 1.0,
+                    "split_to": 2.0,
+                }
+            ]
+        )
+
+        result = await service.get_bars("AAPL", start, end)
+
+        assert result["bars"][0]["close"] == pytest.approx(100.0)
+        cached = store.read_range("AAPL", start, end)
+        assert [row["close"] for row in cached] == [200.0, 200.0, 200.0]
+
+    async def test_actions_are_persisted_during_backfill(
+        self,
+        service: MarketDataService,
+        actions_store: CorporateActionsStore,
+        today: date,
+    ):
+        end = today - timedelta(days=1)
+        start = end - timedelta(days=4)
+        ex_date = start + timedelta(days=2)
+        service._polygon.fetch_splits = AsyncMock(
+            return_value=[
+                {
+                    "execution_date": ex_date.isoformat(),
+                    "split_from": 1.0,
+                    "split_to": 2.0,
+                }
+            ]
+        )
+
+        await service.get_bars("AAPL", start, end)
+
+        stored = actions_store.read("AAPL", start, end)
+        assert len(stored) == 1
+        assert stored[0]["kind"] == "split"
+        assert stored[0]["date"] == ex_date
+
+    async def test_lookback_bars_are_not_returned(
+        self,
+        service: MarketDataService,
+        store: MarketBarsStore,
+        today: date,
+    ):
+        end = today - timedelta(days=1)
+        start = end - timedelta(days=4)
+        store.write_bars(
+            "AAPL",
+            [_bar(start - timedelta(days=1))] + [_bar(start + timedelta(days=i)) for i in range(5)],
+        )
+
+        result = await service.get_bars("AAPL", start, end)
+
+        dates = [b["date"] for b in result["bars"]]
+        assert dates == [start + timedelta(days=i) for i in range(5)]
+
+
 class TestBackfillYesterday:
     async def test_writes_yesterdays_bar_only(
         self, service: MarketDataService, store: MarketBarsStore, today: date
@@ -283,3 +492,26 @@ class TestBackfillYesterday:
     ):
         service._polygon.fetch_daily_bars = AsyncMock(return_value=[])
         assert await service.backfill_yesterday("AAPL") == 0
+
+    async def test_refreshes_recent_corporate_actions(
+        self, service: MarketDataService, actions_store: CorporateActionsStore, today: date
+    ):
+        yesterday = today - timedelta(days=1)
+        service._polygon.fetch_daily_bars = AsyncMock(
+            return_value=[_polygon_bar(_ts_for_ny(yesterday))]
+        )
+        service._polygon.fetch_dividends = AsyncMock(
+            return_value=[
+                {
+                    "ex_dividend_date": yesterday.isoformat(),
+                    "cash_amount": 0.25,
+                }
+            ]
+        )
+
+        await service.backfill_yesterday("AAPL")
+
+        stored = actions_store.read("AAPL", yesterday, today)
+        assert len(stored) == 1
+        assert stored[0]["kind"] == "dividend"
+        assert stored[0]["cash_amount"] == pytest.approx(0.25)

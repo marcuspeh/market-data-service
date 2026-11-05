@@ -6,7 +6,9 @@ A small FastAPI service that:
   (SSGA, iShares) behind a single, provider-agnostic REST endpoint.
 - **Caches market data** (OHLCV bars) from Polygon.io on local disk
   (parquet) with a configurable cache horizon so repeated requests don't
-  re-hit the upstream API.
+  re-hit the upstream API. Prices are stored **raw**; splits and cash
+  dividends are kept alongside them and the adjusted view is rebuilt on
+  every read, so stored numbers never change.
 - **Serves today's bar live** from the [Longbridge OpenAPI](https://open.longbridge.com/)
   QuoteContext — the bar is never persisted because it may still be
   forming.
@@ -25,10 +27,14 @@ A small FastAPI service that:
 │   ├── config/
 │   │   └── settings.py            # Settings + NY timezone helpers
 │   ├── services/
+│   │   ├── adjustments.py             # Split/dividend math + payload normalisers
 │   │   ├── constituents_fetcher.py    # Provider dispatch + registry
 │   │   ├── constituents_service.py    # Cache + fetch orchestration
 │   │   ├── constituents_scheduler.py  # APScheduler trigger
+│   │   ├── corporate_actions_store.py # Split/dividend parquet persistence
+│   │   ├── market_bars_store.py       # Raw OHLCV parquet persistence
 │   │   ├── market_data_service.py     # Bar cache + Longbridge live bar
+│   │   ├── reconcile_scheduler.py     # Weekly action/cache reconciliation
 │   │   └── parsers/                   # Per-provider parsers
 │   │       ├── ssga.py
 │   │       └── ishares.py
@@ -101,7 +107,7 @@ All settings come from environment variables (or a `.env` file via
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DATA_DIR` | `./data` | Root for parquet cache (`market/`, `constituents/`) |
+| `DATA_DIR` | `./data` | Root for parquet cache (`market/`, `corporate_actions/`, `constituents/`) |
 | `POLYGON_API_KEY` | _empty_ | Polygon.io API key |
 | `POLYGON_BASE_URL` | `https://api.polygon.io` | Override Polygon base URL (commented in `.env.example`) |
 | `LONGBRIDGE_APP_KEY` | _empty_ | Longbridge OpenAPI app key |
@@ -181,6 +187,10 @@ backfilled from Polygon.io on miss. **Today's bar** is fetched live
 from Longbridge via `LongbridgeClient` and is **never persisted** —
 it may still be forming.
 
+Prices are stored **raw** (Polygon `adjusted=false`) and adjusted for
+splits and cash dividends at read time, anchored at the last bar of the
+requested window. See [Price adjustment](#price-adjustment).
+
 | Query param | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `from` | `YYYY-MM-DD` | required | Start date (inclusive) |
@@ -243,6 +253,40 @@ curl 'http://localhost:3556/market-data/AAPL?from=2026-07-01&to=2026-08-01'
 - "Today" is the **America/New_York** calendar date. At 00:00 UTC the
   US market is only 8 PM old, so the service still treats the prior
   US session as "today".
+
+## Price adjustment
+
+Two stores are kept side by side:
+
+- `data/market/` — raw OHLCV bars, one parquet file per ticker per year.
+- `data/corporate_actions/` — one parquet file per ticker holding split
+  (`split_from`, `split_to`) and cash-dividend records.
+
+Neither store is rewritten when an action is discovered: reconciliation
+only *adds or replaces* individual records, so a partial upstream
+response can never destroy cached history. The adjusted view is rebuilt
+on each request:
+
+- **Splits** scale prices by `split_from / split_to` and volume by the
+  inverse, for every bar strictly before the execution date.
+- **Cash dividends** scale prices (not volume) by `1 - D / P_prev`, for
+  every bar strictly before the ex-dividend date. `D` is Polygon's
+  `split_adjusted_cash_amount`, and only `distribution_type == "CD"`
+  rows are used.
+
+The series is anchored at the last bar of the requested window, so an
+action dated after `to` does not rescale the response and the same raw
+bars plus action records always produce the same numbers.
+
+A weekly in-process job
+([`reconcile_scheduler.py`](app/services/reconcile_scheduler.py)) runs
+every Saturday at 12:00 PM America/New_York and, per cached ticker,
+merges newly published actions and fills any trading days missing after
+the newest cached bar. `backfill_yesterday` also refreshes the trailing
+30 days of actions on each normal backfill.
+
+`data/market/.price_basis` records the basis version; the first start
+after an upgrade from split-adjusted storage wipes the old cache once.
 
 ## Adding a new ETF
 

@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     )
 
     # Layout: <data_dir>/market/<TICKER>/<YEAR>.parquet
+    #         <data_dir>/corporate_actions/<TICKER>.parquet
     #         <data_dir>/constituents/<TICKER>.parquet
     data_dir: str = Field(default="./data")
 
@@ -57,6 +58,10 @@ class Settings(BaseSettings):
     @property
     def market_data_dir(self) -> Path:
         return Path(self.data_dir) / "market"
+
+    @property
+    def corporate_actions_dir(self) -> Path:
+        return Path(self.data_dir) / "corporate_actions"
 
     @property
     def constituents_dir(self) -> Path:

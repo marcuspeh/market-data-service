@@ -8,6 +8,7 @@ from app.logging_setup import client, setup_logging, shutdown_logging
 from app.middleware.access_log import AccessLogMiddleware
 from app.middleware.correlation import CorrelationIdMiddleware
 from app.services.constituents_scheduler import ConstituentsScheduler
+from app.services.reconcile_scheduler import ReconcileScheduler
 
 setup_logging()
 log = client()
@@ -16,6 +17,7 @@ log = client()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     scheduler: ConstituentsScheduler | None = None
+    reconcile_scheduler: ReconcileScheduler | None = None
     try:
         scheduler = ConstituentsScheduler()
         scheduler.start()
@@ -24,10 +26,19 @@ async def lifespan(app: FastAPI):
         log.error("Failed to start constituents scheduler: %s", e)
 
     try:
+        reconcile_scheduler = ReconcileScheduler()
+        reconcile_scheduler.start()
+        log.info("Reconciliation scheduler started")
+    except Exception as e:  # noqa: BLE001 — defensive top-level
+        log.error("Failed to start reconciliation scheduler: %s", e)
+
+    try:
         yield
     finally:
         if scheduler is not None:
             scheduler.stop()
+        if reconcile_scheduler is not None:
+            reconcile_scheduler.stop()
         shutdown_logging()
 
 
