@@ -341,6 +341,50 @@ class TestInteriorGaps:
 
         service._polygon.fetch_daily_bars.assert_not_called()
 
+    async def test_hole_is_refetched_even_when_the_request_extends_past_the_cache(
+        self, service: MarketDataService, store: MarketBarsStore, today: date
+    ):
+        """The gap check must not be skipped by the edge-extension logic.
+
+        When the request reaches past either end of the cache, the
+        backfill window is never ``None`` — so the hole would survive
+        the refetch of the uncovered edges.
+        """
+        end = today - timedelta(days=1)
+        start = end - timedelta(days=40)
+
+        # Two spans with a hole between them, and a request that starts
+        # before the cache and ends after it.
+        store.write_bars("AAPL", [_bar(start), _bar(start + timedelta(days=3))])
+        store.write_bars("AAPL", [_bar(end - timedelta(days=3)), _bar(end)])
+
+        service._polygon.fetch_daily_bars = AsyncMock(return_value=[])
+
+        await service.get_bars("AAPL", start, end)
+
+        service._polygon.fetch_daily_bars.assert_called_once()
+        # The whole covered range is refetched, not just the edges.
+        fetched_start, fetched_end = service._polygon.fetch_daily_bars.call_args[0][1:]
+        assert fetched_start <= start - LOOKBACK
+        assert fetched_end >= end
+
+    async def test_hole_outside_the_requested_window_is_left_alone(
+        self, service: MarketDataService, store: MarketBarsStore, today: date
+    ):
+        """A hole the request doesn't reach into doesn't trigger a refetch."""
+        end = today - timedelta(days=1)
+        start = end - timedelta(days=40)
+
+        store.write_bars("AAPL", [_bar(start), _bar(start + timedelta(days=3))])
+        store.write_bars("AAPL", [_bar(end - timedelta(days=3)), _bar(end)])
+
+        service._polygon.fetch_daily_bars = AsyncMock(return_value=[])
+
+        # Request only the first span — the hole is out of range.
+        await service.get_bars("AAPL", start, start + timedelta(days=3))
+
+        assert service._polygon.fetch_daily_bars.call_count <= 1
+
 
 class TestToday:
     async def test_longbridge_called_when_end_includes_today(

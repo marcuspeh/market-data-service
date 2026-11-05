@@ -104,13 +104,17 @@ class MarketDataService:
             extent = self._store.cached_extent(ticker, before=today)
             backfill = self._backfill_window(cache_start, historical_end, extent)
 
-            if backfill is None and self._has_interior_gap(
+            # A hole inside the cached extent needs the whole range
+            # refetched — extending the edges alone would leave it in
+            # place. This is checked *before* the edge logic, because the
+            # edge logic always returns a window whenever the request
+            # reaches past either end of the cache.
+            if self._has_interior_gap(
                 ticker, cache_start, historical_end, extent
             ):
-                # The cache holds disjoint spans — refetch the whole range
-                # so the hole is filled rather than served as an empty
-                # stretch of the response.
                 backfill = (cache_start, historical_end)
+            elif backfill is None:
+                backfill = None
 
             if backfill is not None:
                 backfilled_bars = await self._backfill_bars(
@@ -395,23 +399,34 @@ class MarketDataService:
     def _has_interior_gap(
         self, ticker: str, start: date, end: date, extent: tuple[date, date] | None
     ) -> bool:
-        """True when the cached bars don't continuously cover ``start..end``.
+        """True when the cached bars have a hole overlapping ``start..end``.
 
         A genuine market closure never spans more than
         :data:`MAX_CLOSURE_SPAN_DAYS` calendar days, so a wider gap
         between two consecutive cached bars means bars are missing — the
         cache holds two disjoint spans rather than one history.
+
+        The scan covers the ticker's *whole* cached extent, not just
+        ``start..end``: a hole sitting just outside the requested window
+        still matters when the window begins part-way into the cache.
         """
         if extent is None:
             return False
 
-        cached = self._store.cached_dates(ticker, start, end)
+        first, last = extent
+        cached = self._store.cached_dates(ticker, first, last)
         if len(cached) < 2:
             # Fewer than two bars can't have an interior gap.
             return False
 
         for previous, current in zip(cached, cached[1:]):
-            if (current - previous).days > MAX_CLOSURE_SPAN_DAYS:
+            if (current - previous).days <= MAX_CLOSURE_SPAN_DAYS:
+                continue
+            # The hole spans ``previous + 1 .. current - 1``. It matters
+            # only if the requested window reaches into it.
+            hole_start = previous + timedelta(days=1)
+            hole_end = current - timedelta(days=1)
+            if hole_start <= end and start <= hole_end:
                 return True
         return False
 
