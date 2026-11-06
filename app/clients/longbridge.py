@@ -190,11 +190,25 @@ class LongbridgeClient:
 
     @staticmethod
     def _candle_ts_ms(candle: Any) -> int:
-        """Return NY-midnight epoch-ms for ``candle.timestamp``."""
+        """Return NY-midnight epoch-ms for ``candle.timestamp``.
+
+        The SDK hands back a **naive** datetime whose wall-clock fields are
+        the *session date* in US/Eastern — not a UTC instant. Reading it as
+        UTC would shift the bar back a day (00:00 ET is 05:00 UTC, so
+        ``2026-11-05 00:00`` would land on ``2026-11-04``), and the bar
+        would then be filed under the wrong session.
+
+        A naive timestamp is therefore anchored to ET directly. An
+        aware one already carries a real instant, so it is converted.
+        """
         ts = candle.timestamp
         if isinstance(ts, datetime):
             if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
+                # Naive: the fields are already the ET session date.
+                if NY_TZ is None:  # pragma: no cover - Python <3.9
+                    ts = ts.replace(tzinfo=timezone.utc)
+                else:
+                    ts = ts.replace(tzinfo=NY_TZ)
             ts = ts.astimezone(timezone.utc)
         else:  # pragma: no cover - defensive for future SDK shapes
             ts = datetime.fromtimestamp(int(ts), tz=timezone.utc)

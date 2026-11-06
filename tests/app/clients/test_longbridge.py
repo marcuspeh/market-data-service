@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.clients.longbridge import LongbridgeClient, LongbridgeError
-from app.config.settings import NY_TZ, Settings, ny_now
+from app.config.settings import NY_TZ, Settings, ny_from_ts, ny_now
 from tests.conftest import FakeSettings
 
 
@@ -367,6 +367,64 @@ class TestUncachedRequestShape:
         client._ctx.candlesticks.return_value = [candle]
 
         assert await client._fetch_today_bar_uncached("AAPL") is None
+
+
+class TestCandleTimestamp:
+    """The SDK returns naive timestamps holding the ET session date."""
+
+    def test_naive_timestamp_keeps_its_session_date(self):
+        """A naive ``2026-11-05 00:00`` is the Nov 5 session, not Nov 4.
+
+        Reading it as UTC would shift the bar back a day, because 00:00 ET
+        is 05:00 UTC and converting that back to ET lands on Nov 4.
+        """
+        candle = MagicMock()
+        candle.timestamp = datetime(2026, 11, 5, 0, 0)
+
+        ts_ms = LongbridgeClient._candle_ts_ms(candle)
+
+        assert ny_from_ts(ts_ms) == date(2026, 11, 5)
+
+    def test_naive_timestamp_is_anchored_to_et(self):
+        """The epoch-ms must be NY midnight of that session date."""
+        candle = MagicMock()
+        candle.timestamp = datetime(2026, 11, 5, 0, 0)
+
+        ts_ms = LongbridgeClient._candle_ts_ms(candle)
+
+        expected = int(
+            datetime(2026, 11, 5, tzinfo=NY_TZ).astimezone(timezone.utc).timestamp()
+            * 1000
+        )
+        assert ts_ms == expected
+
+    def test_aware_timestamp_is_converted_not_reinterpreted(self):
+        """An aware timestamp already carries a real instant."""
+        candle = MagicMock()
+        candle.timestamp = datetime(2026, 11, 5, 0, 0, tzinfo=timezone.utc)
+
+        ts_ms = LongbridgeClient._candle_ts_ms(candle)
+
+        assert ny_from_ts(ts_ms) == date(2026, 11, 4)
+
+    async def test_naive_candle_for_today_is_accepted(
+        self, fake_settings: FakeSettings
+    ):
+        """The live bar must survive the today's-session check."""
+        client = _make_client(fake_settings)
+        candle = MagicMock(
+            open=1.0, high=2.0, low=0.5, close=1.5, volume=10, turnover=15
+        )
+        candle.timestamp = datetime.combine(
+            LongbridgeClient._today_ny(), datetime.min.time()
+        )
+
+        client._ctx.candlesticks.return_value = [candle]
+
+        result = await client._fetch_today_bar_uncached("AAPL")
+
+        assert result is not None
+        assert ny_from_ts(result["t"]) == LongbridgeClient._today_ny()
 
 
 class TestTodayNycTimezone:
