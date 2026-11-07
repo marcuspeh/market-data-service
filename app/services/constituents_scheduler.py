@@ -53,10 +53,20 @@ class ConstituentsScheduler:
         log.info("Constituents scheduler stopped")
 
     def _schedule_next_run(self) -> None:
-        """Schedule the next run for 8:30 AM New York tomorrow."""
+        """Schedule the next run for 8:30 AM New York.
+
+        The target is the *next* occurrence of 8:30 AM ET: today when
+        the time hasn't passed yet, tomorrow when it has. Always aiming
+        at tomorrow would skip today's run whenever the process starts
+        before 8:30 AM — a restart in the early morning would leave the
+        day's snapshot missing.
+        """
         now_ny = datetime.now(NY_TZ)
-        tomorrow = (now_ny + timedelta(days=1)).date()
-        run_at = datetime.combine(tomorrow, time(8, 30), tzinfo=NY_TZ)
+        run_at = datetime.combine(now_ny.date(), time(8, 30), tzinfo=NY_TZ)
+        if run_at <= now_ny:
+            run_at = datetime.combine(
+                now_ny.date() + timedelta(days=1), time(8, 30), tzinfo=NY_TZ
+            )
 
         self._scheduler.add_job(
             self._refresh_and_reschedule,

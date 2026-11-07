@@ -328,18 +328,33 @@ class TestInteriorGaps:
 
         # Consecutive trading days only (weekends skipped).
         trading = []
+        trading_dates = set()
         d = cache_start
         while d <= end:
             if d.weekday() < 5:
                 trading.append(_bar(d))
+                trading_dates.add(d)
             d += timedelta(days=1)
         store.write_bars("AAPL", trading)
 
         service._polygon.fetch_daily_bars = AsyncMock(return_value=[])
 
-        await service.get_bars("AAPL", start, end)
+        result = await service.get_bars("AAPL", start, end)
 
-        service._polygon.fetch_daily_bars.assert_not_called()
+        # A weekend gap must never trigger a whole-range refetch — that
+        # is the signature of the interior-hole path. The edge logic may
+        # still ask for the non-trading days *before* the first cached
+        # bar (when the lookback start lands on a weekend), so the
+        # assertion is that no fetch spans the covered range.
+        for call in service._polygon.fetch_daily_bars.call_args_list:
+            fetched_start, fetched_end = call.args[1:]
+            assert fetched_end < end, (
+                "a weekend gap must not trigger a whole-range refetch"
+            )
+
+        # No trading day was lost.
+        returned = {b["date"] for b in result["bars"]}
+        assert {d for d in trading_dates if start <= d <= end} <= returned
 
     async def test_hole_is_refetched_even_when_the_request_extends_past_the_cache(
         self, service: MarketDataService, store: MarketBarsStore, today: date

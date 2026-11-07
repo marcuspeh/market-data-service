@@ -13,6 +13,29 @@ from app.services.constituents_scheduler import ConstituentsScheduler
 NY_TZ = ZoneInfo("America/New_York")
 
 
+class _FrozenDatetime(datetime):
+    """``datetime`` stand-in whose ``now()`` is pinned to a fixed moment.
+
+    Subclassing keeps ``combine()`` and the constructor real, so only
+    the clock is faked — patching the whole module would turn
+    ``datetime.combine`` into a MagicMock and break the code under test.
+    """
+
+    _frozen_now: datetime | None = None
+
+    @classmethod
+    def now(cls, tz=None):  # noqa: ANN001 - matches datetime.now signature
+        assert cls._frozen_now is not None
+        if tz is None:
+            return cls._frozen_now.replace(tzinfo=None)
+        return cls._frozen_now.astimezone(tz)
+
+    @classmethod
+    def freeze(cls, moment: datetime) -> type["_FrozenDatetime"]:
+        frozen = type("FrozenDatetime", (_FrozenDatetime,), {"_frozen_now": moment})
+        return frozen
+
+
 class TestSchedulerLifecycle:
     def test_start_then_stop(self):
         sch = ConstituentsScheduler(service=MagicMock())
@@ -61,6 +84,54 @@ class TestScheduleNextRun:
         now = datetime.now(NY_TZ)
         assert run_at > now
         assert (run_at - now).total_seconds() < 48 * 3600
+
+    def test_schedules_today_when_started_before_8_30(self):
+        """A restart before 8:30 ET must still run today.
+
+        Aiming at tomorrow unconditionally would skip the day's
+        snapshot whenever the process comes up in the early morning.
+        """
+        sch = ConstituentsScheduler(service=MagicMock())
+        fake_now = datetime(2026, 11, 6, 6, 0, tzinfo=NY_TZ)
+
+        with patch(
+            "app.services.constituents_scheduler.datetime",
+            _FrozenDatetime.freeze(fake_now),
+        ), patch.object(sch._scheduler, "add_job") as mock_add_job:
+            sch._schedule_next_run()
+
+        run_at = mock_add_job.call_args.kwargs["trigger"].run_date
+        assert run_at == datetime(2026, 11, 6, 8, 30, tzinfo=NY_TZ)
+        assert run_at > fake_now
+
+    def test_schedules_tomorrow_when_started_after_8_30(self):
+        """After 8:30 ET the next occurrence is tomorrow."""
+        sch = ConstituentsScheduler(service=MagicMock())
+        fake_now = datetime(2026, 11, 6, 9, 0, tzinfo=NY_TZ)
+
+        with patch(
+            "app.services.constituents_scheduler.datetime",
+            _FrozenDatetime.freeze(fake_now),
+        ), patch.object(sch._scheduler, "add_job") as mock_add_job:
+            sch._schedule_next_run()
+
+        run_at = mock_add_job.call_args.kwargs["trigger"].run_date
+        assert run_at == datetime(2026, 11, 7, 8, 30, tzinfo=NY_TZ)
+        assert run_at > fake_now
+
+    def test_schedules_tomorrow_when_started_exactly_at_8_30(self):
+        """Exactly 8:30 ET counts as passed — the next run is tomorrow."""
+        sch = ConstituentsScheduler(service=MagicMock())
+        fake_now = datetime(2026, 11, 6, 8, 30, tzinfo=NY_TZ)
+
+        with patch(
+            "app.services.constituents_scheduler.datetime",
+            _FrozenDatetime.freeze(fake_now),
+        ), patch.object(sch._scheduler, "add_job") as mock_add_job:
+            sch._schedule_next_run()
+
+        run_at = mock_add_job.call_args.kwargs["trigger"].run_date
+        assert run_at == datetime(2026, 11, 7, 8, 30, tzinfo=NY_TZ)
 
 
 class TestRefreshAndReschedule:
