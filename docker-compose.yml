@@ -7,6 +7,7 @@ services:
       dockerfile: Dockerfile
     networks:
       - algo01-net
+      - algo02-net
     restart: unless-stopped
     container_name: market-data
     environment:
@@ -32,4 +33,6 @@ services:
 
 networks:
   algo01-net:
+    external: true
+  algo02-net:
     external: true
