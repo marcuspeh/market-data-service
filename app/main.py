@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.constituents import router as constituents_router
+from app.api.market_calendar import router as market_calendar_router
 from app.api.market_data import router as market_data_router
 from app.logging_setup import client, setup_logging, shutdown_logging
 from app.middleware.access_log import AccessLogMiddleware
@@ -49,6 +50,7 @@ app.add_middleware(AccessLogMiddleware)
 app.add_middleware(CorrelationIdMiddleware)
 app.include_router(constituents_router)
 app.include_router(market_data_router)
+app.include_router(market_calendar_router)
 
 
 @app.get("/health")

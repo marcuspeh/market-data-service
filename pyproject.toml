@@ -4,6 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "apscheduler>=3.11.3",
+    "exchange-calendars>=4.13.2",
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
     "longbridge>=4.5.0",

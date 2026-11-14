@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -313,3 +313,90 @@ def test_sync_client_returns_same_shapes() -> None:
     assert result.backfilled_bars == 1
     assert len(result.bars) == 1
     assert result.bars[0].close == 1.5
+
+
+@pytest.mark.asyncio
+async def test_get_market_calendar_returns_typed_session() -> None:
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            json={
+                "date": "2026-11-27T00:00:00Z",
+                "status": "early_close",
+                "is_trading_day": True,
+                "is_holiday": False,
+                "is_early_close": True,
+                "open": "2026-11-27T09:30:00-05:00",
+                "close": "2026-11-27T13:00:00-05:00",
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http:
+        client = MarketDataClient(http_client=http)
+        result = await client.get_market_calendar(date(2026, 11, 27))
+
+    assert result.date == date(2026, 11, 27)
+    assert result.status == "early_close"
+    assert result.is_trading_day is True
+    assert result.is_holiday is False
+    assert result.is_early_close is True
+    assert result.open == datetime(2026, 11, 27, 9, 30, tzinfo=timezone(timedelta(hours=-5)))
+    assert result.close == datetime(2026, 11, 27, 13, 0, tzinfo=timezone(timedelta(hours=-5)))
+    assert seen["url"] == "http://localhost:3556/market-calendar?date=2026-11-27"
+
+
+@pytest.mark.asyncio
+async def test_get_market_calendar_handles_a_day_with_no_session() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "date": "2026-12-25T00:00:00Z",
+                "status": "holiday",
+                "is_trading_day": False,
+                "is_holiday": True,
+                "is_early_close": False,
+                "open": None,
+                "close": None,
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http:
+        client = MarketDataClient(http_client=http)
+        result = await client.get_market_calendar(date(2026, 12, 25))
+
+    assert result.status == "holiday"
+    assert result.is_trading_day is False
+    assert result.is_holiday is True
+    assert result.open is None
+    assert result.close is None
+
+
+def test_sync_client_get_market_calendar() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "date": "2026-11-14T00:00:00Z",
+                "status": "weekend",
+                "is_trading_day": False,
+                "is_holiday": False,
+                "is_early_close": False,
+                "open": None,
+                "close": None,
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as http:
+        client = SyncMarketDataClient(http_client=http)
+        result = client.get_market_calendar(date(2026, 11, 14))
+
+    assert result.status == "weekend"
+    assert result.is_holiday is False
+    assert result.is_trading_day is False

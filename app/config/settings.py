@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     polygon_api_key: str = Field(default="")
     polygon_base_url: str = Field(default="https://api.polygon.io")
 
+    # Exchange calendar backing /market-calendar. "XNYS" is the US
+    # equities calendar; exchange_calendars aliases NYSE / NASDAQ / XNAS
+    # to it, so the three are interchangeable.
+    market_calendar_name: str = Field(default="XNYS")
+
     # Host port for the FastAPI app when run via docker-compose.
     app_port: int = Field(default=3556)
 

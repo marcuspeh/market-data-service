@@ -20,6 +20,7 @@ A small FastAPI service that:
 ├── app/
 │   ├── api/                       # FastAPI routers
 │   │   ├── constituents.py
+│   │   ├── market_calendar.py
 │   │   └── market_data.py
 │   ├── clients/                   # External API clients
 │   │   ├── longbridge.py          # Longbridge OpenAPI wrapper (async + 30s TTL)
@@ -33,6 +34,7 @@ A small FastAPI service that:
 │   │   ├── constituents_scheduler.py  # APScheduler trigger
 │   │   ├── corporate_actions_store.py # Split/dividend parquet persistence
 │   │   ├── market_bars_store.py       # Raw OHLCV parquet persistence
+│   │   ├── market_calendar.py         # Exchange calendar (holidays / early closes)
 │   │   ├── market_data_service.py     # Bar cache + Longbridge live bar
 │   │   ├── reconcile_scheduler.py     # Weekly action/cache reconciliation
 │   │   └── parsers/                   # Per-provider parsers
@@ -110,6 +112,7 @@ All settings come from environment variables (or a `.env` file via
 | `DATA_DIR` | `./data` | Root for parquet cache (`market/`, `corporate_actions/`, `constituents/`) |
 | `POLYGON_API_KEY` | _empty_ | Polygon.io API key |
 | `POLYGON_BASE_URL` | `https://api.polygon.io` | Override Polygon base URL (commented in `.env.example`) |
+| `MARKET_CALENDAR_NAME` | `XNYS` | Exchange calendar backing `/market-calendar` (aliases: `NYSE`, `NASDAQ`, `XNAS`) |
 | `LONGBRIDGE_APP_KEY` | _empty_ | Longbridge OpenAPI app key |
 | `LONGBRIDGE_APP_SECRET` | _empty_ | Longbridge OpenAPI app secret |
 | `LONGBRIDGE_ACCESS_TOKEN` | _empty_ | Longbridge OpenAPI legacy access token |
@@ -253,6 +256,71 @@ curl 'http://localhost:3556/market-data/AAPL?from=2026-07-01&to=2026-08-01'
 - "Today" is the **America/New_York** calendar date. At 00:00 UTC the
   US market is only 8 PM old, so the service still treats the prior
   US session as "today".
+
+### `GET /market-calendar?date={YYYY-MM-DD}`
+
+Returns the market session status for a single **US/Eastern calendar
+date**: whether the exchange traded, whether the date was a market
+holiday, whether the session was shortened, and when it opened and
+closed.
+
+The calendar comes from the [`exchange_calendars`](https://pypi.org/project/exchange-calendars/)
+package (`XNYS` by default — `NYSE`, `NASDAQ` and `XNAS` are aliases for
+it), so the answers come from an offline rules engine — no API call, no
+network, no cache to warm. Holidays observed on the nearest weekday,
+early closes and ad-hoc closures (days of mourning, weather closures) are
+all modelled.
+
+```bash
+curl 'http://localhost:3556/market-calendar?date=2026-11-27'
+```
+
+```json
+{
+  "date": "2026-11-27T00:00:00Z",
+  "status": "early_close",
+  "is_trading_day": true,
+  "is_holiday": false,
+  "is_early_close": true,
+  "open": "2026-11-27T09:30:00-05:00",
+  "close": "2026-11-27T13:00:00-05:00"
+}
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `date` | string | The calendar date as a UTC-midnight RFC3339 marker (`2026-11-27T00:00:00Z`) |
+| `status` | string | `regular`, `early_close`, `holiday` or `weekend` |
+| `is_trading_day` | bool | True when the exchange held a session |
+| `is_holiday` | bool | True for a market holiday |
+| `is_early_close` | bool | True when the session was shortened |
+| `open` | string \| null | Session open, RFC3339 with the US/Eastern offset |
+| `close` | string \| null | Session close, RFC3339 with the US/Eastern offset |
+
+**Invariants:**
+
+- `is_trading_day` is true exactly when `status` is `regular` or
+  `early_close`.
+- `is_early_close` implies `is_trading_day`.
+- `is_holiday` means **a weekday on which the exchange did not trade**. A
+  weekend is not a holiday: both are non-trading days, but only a
+  weekday closure is a holiday.
+- `open` / `close` are non-null exactly when the exchange held a session.
+
+**Notes:**
+
+- `status` describes the **session**, not the clock. At 00:05 ET on a
+  trading day the response is `regular` with that day's scheduled
+  session times — the endpoint never reports "the market is open right
+  now".
+- `date` is a **calendar-day marker, not an instant**. `"2026-11-27T00:00:00Z"`
+  is the previous evening in US/Eastern; the `open` / `close` fields are
+  the real instants and carry the Eastern offset.
+- A regular session runs 09:30–16:00 ET; an early close ends at 13:00 ET.
+- A date outside the supported range (roughly 25 years back to 5 years
+  forward, and **rolling** — it advances with wall-clock time) returns
+  **400** with the supported range in `detail`. A malformed date returns
+  **422** from FastAPI's query validation.
 
 ## Price adjustment
 

@@ -1,10 +1,11 @@
 # market-data-service Python SDK
 
-Async-first client for the `market-data-service` proxy. Mirrors the two
+Async-first client for the `market-data-service` proxy. Mirrors the
 routers exposed by the FastAPI app:
 
 - `GET /constituents?etf={ETF}&date={YYYY-MM-DD}`
 - `GET /market-data/{ticker}?from={YYYY-MM-DD}&to={YYYY-MM-DD}`
+- `GET /market-calendar?date={YYYY-MM-DD}`
 
 ## Install
 
@@ -46,6 +47,10 @@ async def main():
         )
         for bar in bars.bars:
             print(bar.timestamp_utc, bar.close, bar.source)
+
+        # Was 2026-11-27 a market holiday or a shortened session?
+        session = await client.get_market_calendar(date(2026, 11, 27))
+        print(session.status, session.is_early_close, session.close)
 
 asyncio.run(main())
 ```

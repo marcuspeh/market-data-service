@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 from urllib.parse import quote
 
 import httpx
 
-from .models import Bar, BarsResponse, ConstituentsResponse
+from .models import Bar, BarsResponse, ConstituentsResponse, MarketCalendarResponse
 
 
 class MarketDataServiceError(Exception):
@@ -43,6 +43,30 @@ def _parse_date(value: str) -> date:
     # ``date.fromisoformat`` accepts the bare date but not the time suffix,
     # so slice to the leading YYYY-MM-DD before parsing.
     return date.fromisoformat(value[:10])
+
+
+def _parse_datetime(value: str | None) -> Optional[datetime]:
+    """Parse an RFC3339 timestamp, tolerating a trailing ``Z``.
+
+    ``datetime.fromisoformat`` only learned to read the ``Z`` suffix in
+    Python 3.11, and this SDK supports 3.10 — so normalise it to an
+    explicit offset first.
+    """
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _build_market_calendar(payload: dict) -> MarketCalendarResponse:
+    return MarketCalendarResponse(
+        date=_parse_date(payload["date"]),
+        status=str(payload["status"]),
+        is_trading_day=bool(payload["is_trading_day"]),
+        is_holiday=bool(payload["is_holiday"]),
+        is_early_close=bool(payload["is_early_close"]),
+        open=_parse_datetime(payload.get("open")),
+        close=_parse_datetime(payload.get("close")),
+    )
 
 
 def _build_bar(payload: dict) -> Bar:
@@ -165,6 +189,13 @@ class MarketDataClient(_BaseClient):
             bars=bars,
         )
 
+    async def get_market_calendar(self, market_date: date) -> MarketCalendarResponse:
+        """Return the market session status for a single calendar date."""
+        url = f"{self._base_url}/market-calendar"
+        response = await self._http.get(url, params={"date": market_date.isoformat()})
+        self._raise_for_status(response, url)
+        return _build_market_calendar(response.json())
+
 
 class SyncMarketDataClient(_BaseClient):
     """Synchronous wrapper around the async client."""
@@ -248,3 +279,10 @@ class SyncMarketDataClient(_BaseClient):
             backfilled_bars=int(payload.get("backfilled_bars", 0)),
             bars=bars,
         )
+
+    def get_market_calendar(self, market_date: date) -> MarketCalendarResponse:
+        """Return the market session status for a single calendar date."""
+        url = f"{self._base_url}/market-calendar"
+        response = self._http.get(url, params={"date": market_date.isoformat()})
+        self._raise_for_status(response, url)
+        return _build_market_calendar(response.json())

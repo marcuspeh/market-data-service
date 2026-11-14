@@ -9,6 +9,42 @@ type ConstituentResponse struct {
 	Source       string   `json:"source"`
 }
 
+// MarketCalendarResponse matches the JSON shape returned by the
+// market-data-service `/market-calendar` endpoint.
+//
+// Invariants relied on by callers:
+//   - IsTradingDay is true exactly when Status is "regular" or
+//     "early_close".
+//   - IsEarlyClose implies IsTradingDay.
+//   - IsHoliday means "a weekday on which the exchange did not trade" —
+//     a weekend is not a holiday.
+//   - Open and Close are set exactly when the exchange held a session.
+//
+// Open and Close are pointers so the zero value (nil) distinguishes
+// "no session" from an empty string.
+type MarketCalendarResponse struct {
+	Date         string  `json:"date"`
+	Status       string  `json:"status"`
+	IsTradingDay bool    `json:"is_trading_day"`
+	IsHoliday    bool    `json:"is_holiday"`
+	IsEarlyClose bool    `json:"is_early_close"`
+	Open         *string `json:"open"`
+	Close        *string `json:"close"`
+}
+
+// DateOnly returns the calendar day encoded in Date, in YYYY-MM-DD form.
+//
+// Date is a UTC-midnight marker ("2026-11-27T00:00:00Z"), not an
+// instant: parsed as a time.Time and formatted in US/Eastern it yields
+// the previous evening. Use this when you want the day the endpoint
+// actually answered for.
+func (r *MarketCalendarResponse) DateOnly() string {
+	if len(r.Date) >= 10 {
+		return r.Date[:10]
+	}
+	return r.Date
+}
+
 // BarsResponse matches the JSON shape returned by the
 // market-data-service `/market-data/{ticker}` endpoint.
 type BarsResponse struct {

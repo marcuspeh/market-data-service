@@ -1,7 +1,8 @@
 """Typed responses for the market-data-service proxy.
 
 These mirror the JSON shapes returned by the FastAPI app in
-``app/api/constituents.py`` and ``app/api/market_data.py``.
+``app/api/constituents.py``, ``app/api/market_data.py`` and
+``app/api/market_calendar.py``.
 """
 from __future__ import annotations
 
@@ -69,3 +70,27 @@ class BarsResponse:
     @property
     def to_date(self) -> _date:
         return self.to
+
+
+@dataclass
+class MarketCalendarResponse:
+    """The market session status of a single calendar date.
+
+    Invariants relied on by callers:
+
+    * ``is_trading_day`` is true exactly when ``status`` is ``regular``
+      or ``early_close``.
+    * ``is_early_close`` implies ``is_trading_day``.
+    * ``is_holiday`` means "a weekday on which the exchange did not
+      trade" — a weekend is *not* a holiday.
+    * ``open`` / ``close`` are set exactly when the exchange held a
+      session.
+    """
+
+    date: _date
+    status: str
+    is_trading_day: bool
+    is_holiday: bool
+    is_early_close: bool
+    open: Optional[datetime] = None
+    close: Optional[datetime] = None

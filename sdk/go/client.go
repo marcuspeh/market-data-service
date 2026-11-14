@@ -10,9 +10,10 @@ import (
 )
 
 // Client is a thin HTTP client for the market-data-service proxy.
-// It mirrors the two routers exposed by ../market-data-service/app/main.py:
+// It mirrors the routers exposed by ../market-data-service/app/main.py:
 //   - GET /constituents?etf=SPY&date=YYYY-MM-DD
 //   - GET /market-data/{ticker}?from=YYYY-MM-DD&to=YYYY-MM-DD
+//   - GET /market-calendar?date=YYYY-MM-DD
 type Client struct {
 	baseURL string
 }
@@ -88,6 +89,31 @@ func (c *Client) GetBars(ctx context.Context, ticker string, from, to time.Time)
 	}
 
 	var result BarsResponse
+	if err := c.do(ctx, req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// GetMarketCalendar returns the market session status for a single
+// calendar date. `date` is interpreted as a US/Eastern calendar day; the
+// proxy expects YYYY-MM-DD.
+//
+// The response reports whether the exchange traded, whether the date was
+// a market holiday, whether the session was shortened, and the session
+// open/close times. A date outside the supported calendar range comes
+// back as HTTP 400.
+func (c *Client) GetMarketCalendar(ctx context.Context, date time.Time) (*MarketCalendarResponse, error) {
+	q := url.Values{}
+	q.Set("date", date.Format("2006-01-02"))
+
+	endpoint := fmt.Sprintf("%s/market-calendar?%s", c.baseURL, q.Encode())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	var result MarketCalendarResponse
 	if err := c.do(ctx, req, &result); err != nil {
 		return nil, err
 	}

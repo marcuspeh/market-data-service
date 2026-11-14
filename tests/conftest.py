@@ -21,7 +21,9 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
     config_store/backend's test layout).
     """
     for key in list(os.environ):
-        if key.startswith(("POLYGON_", "LONGBRIDGE_", "APP_", "DATA_", "LOG_")):
+        if key.startswith(
+            ("POLYGON_", "LONGBRIDGE_", "APP_", "DATA_", "LOG_", "MARKET_CALENDAR_")
+        ):
             monkeypatch.delenv(key, raising=False)
 
     hermetic_settings = settings_module.Settings(_env_file=None)
@@ -36,6 +38,8 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "app.services.constituents_scheduler",
         "app.services.constituents_service",
         "app.services.market_data_service",
+        "app.services.market_calendar",
+        "app.api.market_calendar",
     ):
         try:
             monkeypatch.setattr(
@@ -59,6 +63,7 @@ class FakeSettings:
     polygon_api_key: str = "test-key"
     polygon_base_url: str = "https://api.polygon.io"
     app_port: int = 3556
+    market_calendar_name: str = "XNYS"
     longbridge_app_key: str = "test-app-key"
     longbridge_app_secret: str = "test-app-secret"
     longbridge_access_token: str = "test-access-token"

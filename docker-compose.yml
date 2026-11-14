@@ -13,6 +13,7 @@ services:
     environment:
       DATA_DIR: /var/lib/market-data
       POLYGON_API_KEY: ${POLYGON_API_KEY}
+      MARKET_CALENDAR_NAME: ${MARKET_CALENDAR_NAME:-XNYS}
 
       # Longbridge OpenAPI credentials (developer center).
       LONGBRIDGE_APP_KEY: ${LONGBRIDGE_APP_KEY}
