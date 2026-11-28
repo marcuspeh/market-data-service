@@ -17,6 +17,7 @@ an action dated after ``to`` does not rescale the response. Within the
 window itself the series is deterministic — the same raw bars and the
 same action records always produce the same numbers.
 """
+import asyncio
 import time
 from datetime import date, timedelta
 from typing import Any
@@ -48,6 +49,11 @@ ACTION_REFRESH_DAYS = 30
 #: than 5 calendar days apart. A wider span means real bars are missing
 #: and the range has to be refetched.
 MAX_CLOSURE_SPAN_DAYS = 5
+
+#: How many symbols of a batch are fetched at the same time. A batch is
+#: fan-out over Polygon/Longbridge, so it is bounded to keep the upstream
+#: from seeing a burst of concurrent requests.
+MAX_CONCURRENT_FETCHES = 8
 
 #: How long a corporate-action sync counts as fresh for a ticker. Actions
 #: are re-synced on every read because a split or dividend can be declared
@@ -178,6 +184,38 @@ class MarketDataService:
             "backfilled_bars": backfilled_bars,
             "bars": bars,
         }
+
+    async def get_bars_batch(
+        self,
+        tickers: list[str],
+        start: date,
+        end: date,
+    ) -> dict[str, Any]:
+        """Fetch bars for several tickers over the same window.
+
+        The symbols are fetched concurrently, but independently: one
+        symbol failing upstream is reported on its own (in ``errors``)
+        instead of failing the whole batch.
+        """
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_FETCHES)
+
+        async def fetch(ticker: str) -> dict[str, Any] | Exception:
+            async with semaphore:
+                try:
+                    return await self.get_bars(ticker, start, end)
+                except Exception as e:  # noqa: BLE001 — per-symbol isolation
+                    return e
+
+        outcomes = await asyncio.gather(*(fetch(ticker) for ticker in tickers))
+
+        results: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for ticker, outcome in zip(tickers, outcomes):
+            if isinstance(outcome, Exception):
+                errors.append({"ticker": ticker, "error": outcome})
+            else:
+                results.append(outcome)
+        return {"results": results, "errors": errors}
 
     async def backfill_yesterday(self, ticker: str) -> int:
         """Fetch yesterday's daily bar from Polygon and persist it raw.

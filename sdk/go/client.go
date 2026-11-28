@@ -1,6 +1,7 @@
 package marketdata
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 // It mirrors the routers exposed by ../market-data-service/app/main.py:
 //   - GET /constituents?etf=SPY&date=YYYY-MM-DD
 //   - GET /market-data/{ticker}?from=YYYY-MM-DD&to=YYYY-MM-DD
+//   - POST /market-data/batch
 //   - GET /market-calendar?date=YYYY-MM-DD
 type Client struct {
 	baseURL string
@@ -89,6 +91,38 @@ func (c *Client) GetBars(ctx context.Context, ticker string, from, to time.Time)
 	}
 
 	var result BarsResponse
+	if err := c.do(ctx, req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// GetBarsBatch returns daily OHLCV bars for several symbols at once,
+// over the same window. The proxy fetches the symbols independently: one
+// symbol failing upstream comes back in Errors instead of failing the
+// whole call.
+func (c *Client) GetBarsBatch(ctx context.Context, symbols []string, from, to time.Time) (*BatchBarsResponse, error) {
+	body := map[string]interface{}{
+		"symbols": symbols,
+		"from":    from.Format("2006-01-02"),
+	}
+	if !to.IsZero() {
+		body["to"] = to.Format("2006-01-02")
+	}
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode request: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("%s/market-data/batch", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	var result BatchBarsResponse
 	if err := c.do(ctx, req, &result); err != nil {
 		return nil, err
 	}

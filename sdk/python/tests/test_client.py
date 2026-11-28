@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -225,6 +226,81 @@ async def test_get_bars_500_raises_service_error() -> None:
         client = MarketDataClient(http_client=http)
         with pytest.raises(MarketDataServiceError):
             await client.get_bars("AAPL", from_=date(2026, 8, 10))
+
+
+@pytest.mark.asyncio
+async def test_get_bars_batch_returns_results_and_errors() -> None:
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "ticker": "AAPL",
+                        "from": "2026-08-10T00:00:00Z",
+                        "to": "2026-08-20T00:00:00Z",
+                        "backfilled_bars": 0,
+                        "bars": [],
+                    }
+                ],
+                "errors": [
+                    {
+                        "ticker": "MSFT",
+                        "status_code": 502,
+                        "detail": "upstream error",
+                    }
+                ],
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http:
+        client = MarketDataClient(http_client=http)
+        result = await client.get_bars_batch(
+            ["aapl", "MSFT"], from_=date(2026, 8, 10), to=date(2026, 8, 20)
+        )
+
+    assert seen["url"] == "http://localhost:3556/market-data/batch"
+    assert seen["body"] == {
+        "symbols": ["AAPL", "MSFT"],
+        "from": "2026-08-10",
+        "to": "2026-08-20",
+    }
+    assert [r.ticker for r in result.results] == ["AAPL"]
+    assert result.errors[0].ticker == "MSFT"
+    assert result.errors[0].status_code == 502
+    assert result.errors[0].detail == "upstream error"
+
+
+def test_sync_client_get_bars_batch() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "ticker": "AAPL",
+                        "from": "2026-08-10T00:00:00Z",
+                        "to": "2026-08-10T00:00:00Z",
+                        "backfilled_bars": 0,
+                        "bars": [],
+                    }
+                ],
+                "errors": [],
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as http:
+        client = SyncMarketDataClient(http_client=http)
+        result = client.get_bars_batch(["AAPL"], from_=date(2026, 8, 10))
+
+    assert [r.ticker for r in result.results] == ["AAPL"]
+    assert result.errors == []
 
 
 @pytest.mark.asyncio

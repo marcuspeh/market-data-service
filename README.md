@@ -257,6 +257,50 @@ curl 'http://localhost:3556/market-data/AAPL?from=2026-07-01&to=2026-08-01'
   US market is only 8 PM old, so the service still treats the prior
   US session as "today".
 
+### `POST /market-data/batch`
+
+Returns daily OHLCV bars for **many symbols in one request** — the same
+data as `GET /market-data/{ticker}`, for a list of tickers. Use it
+instead of looping over the single-symbol endpoint: one HTTP round trip
+instead of one per symbol.
+
+| Body field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `symbols` | `[]string` | required | Ticker symbols, e.g. `["AAPL", "MSFT"]`. Duplicates are collapsed. |
+| `from` | `YYYY-MM-DD` | required | Start date (inclusive) |
+| `to` | `YYYY-MM-DD` | today (NY) | End date (inclusive) |
+
+```bash
+curl -X POST 'http://localhost:3556/market-data/batch' \
+  -H 'Content-Type: application/json' \
+  -d '{"symbols": ["AAPL", "MSFT"], "from": "2026-08-10", "to": "2026-08-20"}'
+```
+
+```json
+{
+  "results": [
+    {"ticker": "AAPL", "from": "2026-08-10", "to": "2026-08-20",
+     "backfilled_bars": 0, "bars": [{"ticker": "AAPL", "...": "..."}]},
+    {"ticker": "MSFT", "from": "2026-08-10", "to": "2026-08-20",
+     "backfilled_bars": 0, "bars": [{"ticker": "MSFT", "...": "..."}]}
+  ],
+  "errors": []
+}
+```
+
+The symbols are fetched **independently**: one symbol failing upstream
+does not fail the request. It is reported in `errors` instead, with the
+status the single-symbol endpoint would have returned:
+
+```json
+{
+  "results": [{"ticker": "AAPL", "...": "..."}],
+  "errors": [{"ticker": "BAD!!", "status_code": 502, "detail": "Polygon upstream error: ..."}]
+}
+```
+
+`results` and `errors` together account for every requested symbol.
+
 ### `GET /market-calendar?date={YYYY-MM-DD}`
 
 Returns the market session status for a single **US/Eastern calendar

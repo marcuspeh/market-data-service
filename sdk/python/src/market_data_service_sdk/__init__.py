@@ -7,16 +7,25 @@ from .client import (
     SyncMarketDataClient,
     UnsupportedSymbolError,
 )
-from .models import Bar, BarsResponse, ConstituentsResponse, MarketCalendarResponse
+from .models import (
+    Bar,
+    BarsResponse,
+    BatchBarsResponse,
+    ConstituentsResponse,
+    MarketCalendarResponse,
+    SymbolError,
+)
 
 __all__ = [
     "Bar",
     "BarsResponse",
+    "BatchBarsResponse",
     "ConstituentsNotFoundError",
     "ConstituentsResponse",
     "MarketCalendarResponse",
     "MarketDataClient",
     "MarketDataServiceError",
     "SyncMarketDataClient",
+    "SymbolError",
     "UnsupportedSymbolError",
 ]

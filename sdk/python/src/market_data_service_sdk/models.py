@@ -73,6 +73,28 @@ class BarsResponse:
 
 
 @dataclass
+class SymbolError:
+    """A symbol of a batch that could not be served."""
+
+    ticker: str
+    status_code: int
+    detail: str
+
+
+@dataclass
+class BatchBarsResponse:
+    """Bars for every symbol of a batch that could be served.
+
+    ``results`` and ``errors`` together account for every requested
+    symbol: a symbol that failed upstream is listed in ``errors``
+    instead of failing the whole request.
+    """
+
+    results: list[BarsResponse]
+    errors: list[SymbolError]
+
+
+@dataclass
 class MarketCalendarResponse:
     """The market session status of a single calendar date.
 

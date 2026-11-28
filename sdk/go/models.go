@@ -55,6 +55,24 @@ type BarsResponse struct {
 	Bars           []Bar  `json:"bars"`
 }
 
+// BatchBarsResponse matches the JSON shape returned by the
+// market-data-service `/market-data/batch` endpoint.
+//
+// Results and Errors together account for every requested symbol: a
+// symbol that failed upstream is listed in Errors instead of failing
+// the whole request.
+type BatchBarsResponse struct {
+	Results []BarsResponse `json:"results"`
+	Errors  []SymbolError  `json:"errors"`
+}
+
+// SymbolError describes a symbol of a batch that could not be served.
+type SymbolError struct {
+	Ticker     string `json:"ticker"`
+	StatusCode int    `json:"status_code"`
+	Detail     string `json:"detail"`
+}
+
 // Bar is the per-bar OHLCV payload returned by the proxy. We keep this
 // type local so callers can convert into their own indicator-friendly
 // Bar (e.g. indicators.Bar) at the boundary.

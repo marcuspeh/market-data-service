@@ -8,7 +8,14 @@ from urllib.parse import quote
 
 import httpx
 
-from .models import Bar, BarsResponse, ConstituentsResponse, MarketCalendarResponse
+from .models import (
+    Bar,
+    BarsResponse,
+    BatchBarsResponse,
+    ConstituentsResponse,
+    MarketCalendarResponse,
+    SymbolError,
+)
 
 
 class MarketDataServiceError(Exception):
@@ -83,6 +90,30 @@ def _build_bar(payload: dict) -> Bar:
             int(payload["trade_count"]) if payload.get("trade_count") is not None else None
         ),
         source=str(payload.get("source", "")),
+    )
+
+
+def _build_bars_response(payload: dict) -> BarsResponse:
+    return BarsResponse(
+        ticker=str(payload["ticker"]),
+        from_=_parse_date(payload["from"]),
+        to=_parse_date(payload["to"]),
+        backfilled_bars=int(payload.get("backfilled_bars", 0)),
+        bars=[_build_bar(b) for b in payload.get("bars", [])],
+    )
+
+
+def _build_batch_bars_response(payload: dict) -> BatchBarsResponse:
+    return BatchBarsResponse(
+        results=[_build_bars_response(r) for r in payload.get("results", [])],
+        errors=[
+            SymbolError(
+                ticker=str(e["ticker"]),
+                status_code=int(e["status_code"]),
+                detail=str(e["detail"]),
+            )
+            for e in payload.get("errors", [])
+        ],
     )
 
 
@@ -179,15 +210,30 @@ class MarketDataClient(_BaseClient):
         response = await self._http.get(url, params=params)
         self._raise_for_status(response, url)
 
-        payload = response.json()
-        bars = [_build_bar(b) for b in payload.get("bars", [])]
-        return BarsResponse(
-            ticker=str(payload["ticker"]),
-            from_=_parse_date(payload["from"]),
-            to=_parse_date(payload["to"]),
-            backfilled_bars=int(payload.get("backfilled_bars", 0)),
-            bars=bars,
-        )
+        return _build_bars_response(response.json())
+
+    async def get_bars_batch(
+        self,
+        symbols: list[str],
+        from_: date,
+        to: Optional[date] = None,
+    ) -> BatchBarsResponse:
+        """Return bars for several symbols in one request.
+
+        The proxy fetches the symbols independently: one symbol failing
+        upstream comes back in ``errors`` instead of failing the call.
+        """
+        body: dict[str, object] = {
+            "symbols": [s.upper() for s in symbols],
+            "from": from_.isoformat(),
+        }
+        if to is not None:
+            body["to"] = to.isoformat()
+
+        url = f"{self._base_url}/market-data/batch"
+        response = await self._http.post(url, json=body)
+        self._raise_for_status(response, url)
+        return _build_batch_bars_response(response.json())
 
     async def get_market_calendar(self, market_date: date) -> MarketCalendarResponse:
         """Return the market session status for a single calendar date."""
@@ -270,15 +316,30 @@ class SyncMarketDataClient(_BaseClient):
         response = self._http.get(url, params=params)
         self._raise_for_status(response, url)
 
-        payload = response.json()
-        bars = [_build_bar(b) for b in payload.get("bars", [])]
-        return BarsResponse(
-            ticker=str(payload["ticker"]),
-            from_=_parse_date(payload["from"]),
-            to=_parse_date(payload["to"]),
-            backfilled_bars=int(payload.get("backfilled_bars", 0)),
-            bars=bars,
-        )
+        return _build_bars_response(response.json())
+
+    def get_bars_batch(
+        self,
+        symbols: list[str],
+        from_: date,
+        to: Optional[date] = None,
+    ) -> BatchBarsResponse:
+        """Return bars for several symbols in one request.
+
+        The proxy fetches the symbols independently: one symbol failing
+        upstream comes back in ``errors`` instead of failing the call.
+        """
+        body: dict[str, object] = {
+            "symbols": [s.upper() for s in symbols],
+            "from": from_.isoformat(),
+        }
+        if to is not None:
+            body["to"] = to.isoformat()
+
+        url = f"{self._base_url}/market-data/batch"
+        response = self._http.post(url, json=body)
+        self._raise_for_status(response, url)
+        return _build_batch_bars_response(response.json())
 
     def get_market_calendar(self, market_date: date) -> MarketCalendarResponse:
         """Return the market session status for a single calendar date."""

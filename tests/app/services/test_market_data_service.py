@@ -762,3 +762,36 @@ class TestBackfillYesterday:
         assert len(stored) == 1
         assert stored[0]["kind"] == "dividend"
         assert stored[0]["cash_amount"] == pytest.approx(0.25)
+
+
+class TestBatch:
+    async def test_results_cover_every_symbol(
+        self, service: MarketDataService, today: date
+    ):
+        end = today - timedelta(days=1)
+        start = end - timedelta(days=4)
+
+        outcome = await service.get_bars_batch(["AAPL", "MSFT"], start, end)
+
+        assert [r["ticker"] for r in outcome["results"]] == ["AAPL", "MSFT"]
+        assert outcome["errors"] == []
+
+    async def test_a_failing_symbol_does_not_fail_the_batch(
+        self, service: MarketDataService, today: date
+    ):
+        end = today - timedelta(days=1)
+        start = end - timedelta(days=4)
+
+        def _fetch(ticker: str, start: date, end: date) -> list[dict[str, Any]]:
+            if ticker == "MSFT":
+                raise PolygonError(f"Polygon HTTP 429 for {ticker}")
+            return []
+
+        service._polygon.fetch_daily_bars = AsyncMock(side_effect=_fetch)
+
+        outcome = await service.get_bars_batch(["AAPL", "MSFT"], start, end)
+
+        assert [r["ticker"] for r in outcome["results"]] == ["AAPL"]
+        assert len(outcome["errors"]) == 1
+        assert outcome["errors"][0]["ticker"] == "MSFT"
+        assert isinstance(outcome["errors"][0]["error"], PolygonError)

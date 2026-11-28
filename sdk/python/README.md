@@ -5,6 +5,7 @@ routers exposed by the FastAPI app:
 
 - `GET /constituents?etf={ETF}&date={YYYY-MM-DD}`
 - `GET /market-data/{ticker}?from={YYYY-MM-DD}&to={YYYY-MM-DD}`
+- `POST /market-data/batch`
 - `GET /market-calendar?date={YYYY-MM-DD}`
 
 ## Install
@@ -47,6 +48,17 @@ async def main():
         )
         for bar in bars.bars:
             print(bar.timestamp_utc, bar.close, bar.source)
+
+        # Many symbols in one request — one HTTP call instead of one per symbol.
+        batch = await client.get_bars_batch(
+            ["AAPL", "MSFT"],
+            from_=date(2026, 8, 10),
+            to=date(2026, 8, 20),
+        )
+        for result in batch.results:
+            print(result.ticker, len(result.bars))
+        for error in batch.errors:
+            print("failed:", error.ticker, error.detail)
 
         # Was 2026-11-27 a market holiday or a shortened session?
         session = await client.get_market_calendar(date(2026, 11, 27))

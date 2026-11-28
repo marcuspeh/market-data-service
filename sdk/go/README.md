@@ -5,6 +5,7 @@ exposed by the FastAPI app:
 
 - `GET /constituents?etf={ETF}&date={YYYY-MM-DD}`
 - `GET /market-data/{ticker}?from={YYYY-MM-DD}&to={YYYY-MM-DD}`
+- `POST /market-data/batch`
 - `GET /market-calendar?date={YYYY-MM-DD}`
 
 ## Install
@@ -51,6 +52,21 @@ func main() {
 		log.Printf("%s %s close=%.2f source=%s", b.Ticker, day, b.Close, b.Source)
 	}
 
+	// Many symbols in one request — one HTTP call instead of one per symbol.
+	batch, err := client.GetBarsBatch(ctx, []string{"AAPL", "MSFT"},
+		time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, e := range batch.Errors {
+		log.Printf("%s failed: %s", e.Ticker, e.Detail)
+	}
+	for _, r := range batch.Results {
+		log.Printf("%s: %d bars", r.Ticker, len(r.Bars))
+	}
+
 	// Was 2026-11-27 a market holiday or a shortened session?
 	session, err := client.GetMarketCalendar(ctx, time.Date(2026, 11, 27, 0, 0, 0, 0, time.UTC))
 	if err != nil {
@@ -72,6 +88,7 @@ matters on the wire.
 
 `GetBars(ctx, ticker, from, to.Time)` — pass the zero `time.Time{}` for
 `to` to omit the upper bound and let the proxy default to today (NY).
+`GetBarsBatch` takes the same window for a list of symbols.
 
 Response dates come back as **strings**, not `time.Time`: the proxy
 emits RFC3339, but the SDK leaves them as-is so the exact wire value is
@@ -93,6 +110,17 @@ type BarsResponse struct {
 	To             string
 	BackfilledBars int
 	Bars           []Bar
+}
+
+type BatchBarsResponse struct {
+	Results []BarsResponse
+	Errors  []SymbolError
+}
+
+type SymbolError struct {
+	Ticker     string
+	StatusCode int
+	Detail     string
 }
 
 type Bar struct {

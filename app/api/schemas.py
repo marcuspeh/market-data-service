@@ -116,6 +116,49 @@ def build_bars_response(payload: dict) -> BarsResponseOut:
     )
 
 
+class BatchBarsRequestIn(BaseModel):
+    """Request body of ``POST /market-data/batch``."""
+
+    symbols: list[str] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Ticker symbols to fetch, e.g. [\"AAPL\", \"MSFT\"]. "
+            "Duplicates are collapsed, so a symbol is only fetched once."
+        ),
+    )
+    from_: _date = Field(
+        alias="from",
+        description="Start date inclusive (YYYY-MM-DD)",
+    )
+    to: _date | None = Field(
+        None,
+        description="End date inclusive (YYYY-MM-DD). Defaults to today.",
+    )
+
+    model_config = {"populate_by_name": True}
+
+
+class SymbolErrorOut(BaseModel):
+    """A symbol that could not be served, reported alongside the others."""
+
+    ticker: str
+    status_code: int
+    detail: str
+
+
+class BatchBarsResponseOut(BaseModel):
+    """Bars for every symbol of a batch that could be served.
+
+    ``results`` and ``errors`` together account for every requested
+    symbol: a symbol that failed upstream appears in ``errors`` rather
+    than failing the whole request.
+    """
+
+    results: list[BarsResponseOut]
+    errors: list[SymbolErrorOut]
+
+
 class MarketCalendarOut(BaseModel):
     """The market session status of a single calendar date.
 
